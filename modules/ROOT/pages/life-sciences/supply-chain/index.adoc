@@ -1,0 +1,11 @@
+= Supply Chain
+
+Supply chain in life sciences encompasses the movement of pharmaceutical products, active ingredients, and medical devices from manufacturing through distribution to dispensers and patients. Graph databases support traceability, recall management, and compliance with serialization and chain-of-custody regulations.
+
+== Use Cases
+
+=== Track and Trace
+
+Track and trace enables following products and batches through the supply chain for recalls, anti-counterfeiting, and regulatory compliance.
+
+* xref:life-sciences/supply-chain/track-and-trace.adoc[Track and Trace]
