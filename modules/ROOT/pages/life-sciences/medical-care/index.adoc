@@ -14,9 +14,15 @@ Drug safety is a critical aspect of medical care, and is a key use case for grap
 
 * xref:life-sciences/medical-care/drug-safety.adoc[]
 
+=== Identification of Medicinal Products (IDMP)
+
+The Identification of Medicinal Products (IDMP) is a system for identifying and tracking medicinal products. It is a global system that is used to identify and track medicinal products across the world.
+
+* xref:life-sciences/medical-care/idmp.adoc[Identification of Medicinal Products (IDMP)]
+
 === Patient Journey
 
 A Patient Journey encompasses the interactions a patient has with a healthcare system, and can be viewed from a holistic 'lifetime' perspective through
 to individual episodes of care.
 
-* xref:life-sciences/medical-care/patient-journey.adoc[]
+* xref:life-sciences/medical-care/patient-journey.adoc[Patient Journey]
