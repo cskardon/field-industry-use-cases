@@ -53,107 +53,122 @@ Each layer has a set of nodes and relationships that are used to represent the d
 Substance nodes represent the active substance of a pharmaceutical product.
 
 Node:
-Substance
-	•	name: Acetylsalicylic Acid
-	•	inn: aspirin
-	•	molecular_formula: C9H8O4
-	•	cas: 50-78-2
+
+* `Substance` - the active substance present in a medicinal product.
+  ** `name` - Acetylsalicylic Acid
+  ** `inn` - aspirin
+  ** `molecular_formula` - C9H8O4
+  ** `cas` - 50-78-2
+
+* `SubstanceModification` - describes chemical modification of a substance.
+  ** `type` - acid
+  ** `parent_substance` - salicylic acid
 
 Relationship:
-Substance
-→ HAS_MODIFICATION →
 
-Node:
-SubstanceModification
-	•	type: acid
-	•	parent_substance: salicylic acid
-
-⸻
+* `HAS_MODIFICATION` - a relationship between a substance and a substance modification.
+  ** `Substance` -> `HAS_MODIFICATION` -> `SubstanceModification`
 
 ==== Product Layer
 
 PharmaceuticalProduct nodes represent the pharmaceutical product, which is a combination of a substance and a dose form.
 
 Node:
-PharmaceuticalProduct
-	•	name: Aspirin 500mg Tablet
-	•	product_id: EU/1/…
 
+* `PharmaceuticalProduct` - the pharmaceutical product, which is a combination of a substance and a dose form.
+  ** `name` - Aspirin 500mg Tablet
+  ** `product_id` - EU/1/…
+
+* `DoseForm` - the dose form of a pharmaceutical product.
+  ** `term` - film-coated tablet
+  ** `edqm_code` - 10219000
+
+* `RouteOfAdministration` - the route of administration of a pharmaceutical product.
+  ** `term` - oral use
+  ** `edqm_code` - 20053000
+
+* `Organisation` - the organisation that manufactures a pharmaceutical product.
+  ** `name` - Bayer Manufacturing GmbH	
 Relationships:
 
-PharmaceuticalProduct
-→ CONTAINS (strength: 500mg, strength_type: equal) →
-Substance (Acetylsalicylic Acid)
+* `HAS_DOSE_FORM` - a relationship between a pharmaceutical product and a dose form.
+  ** `PharmaceuticalProduct` -> `HAS_DOSE_FORM` -> `DoseForm`
 
-PharmaceuticalProduct
-→ HAS_DOSE_FORM →
-DoseForm
-	•	term: film-coated tablet
-	•	edqm_code: 10219000
+* `HAS_ROUTE` - a relationship between a pharmaceutical product and a route of administration.
+  ** `PharmaceuticalProduct` -> `HAS_ROUTE` -> `RouteOfAdministration`
 
-PharmaceuticalProduct
-→ HAS_ROUTE →
-RouteOfAdministration
-	•	term: oral use
-	•	edqm_code: 20053000
+* `MANUFACTURED_BY` - a relationship between a pharmaceutical product and an organisation.
+  ** `PharmaceuticalProduct` -> `MANUFACTURED_BY` -> `Organisation`
 
-PharmaceuticalProduct
-→ MANUFACTURED_BY (role: finished_product) →
-Organisation
-	•	name: Bayer Manufacturing GmbH
+* `Organisation` - the organisation that manufactures a pharmaceutical product.
+  ** `name` - Bayer Manufacturing GmbH
 
-⸻
 ==== Packaging & Authorization Layer
 
-PackagedProduct nodes represent the packaged product, which is a combination of a pharmaceutical product and a pack size.
-
-Node:
-PackagedProduct
-	•	pack_size: 20
-	•	barcode: 4007971013704
+* `PackagedProduct` - the packaged product, which is a combination of a pharmaceutical product and a pack size.
+  ** `pack_size` - 20
+  ** `barcode` - 4007971013704
 
 Relationship:
-PackagedProduct
-→ IS_PRESENTATION_OF →
-PharmaceuticalProduct
 
-⸻
+* `PackagedProduct` - the packaged product, which is a combination of a pharmaceutical product and a pack size.
+  ** `pack_size` - 20
+  ** `barcode` - 4007971013704
+
+* `IS_PRESENTATION_OF` - a relationship between a packaged product and a pharmaceutical product.
+  ** `PackagedProduct` -> `IS_PRESENTATION_OF` -> `PharmaceuticalProduct`
+
 ==== Marketing Authorization Layer
 
 MarketingAuthorization nodes represent the marketing authorization for a packaged product.
 
 Node:
-MarketAuthorization
-	•	auth_number: DE-12345
-	•	status: active
-	•	expiry: 2027-06-01
+
+* `MarketAuthorization` - the marketing authorization for a packaged product.
+  ** `auth_number` - DE-12345
+  ** `status` - active
+  ** `expiry` - 2027-06-01
+
+* `MarketAuthorization` - the marketing authorization for a packaged product.
+  ** `auth_number` - DE-12345
+  ** `status` - active
+  ** `expiry` - 2027-06-01
+
+* `RegulatoryAgency` - the regulatory agency that granted the marketing authorization.
+  ** `name` - BfArM
+  ** `country` - DE
+
+* `Organisation` - the organisation that holds the marketing authorization.
+  ** `name` - Bayer AG
+  ** `country` - DE
+
+Relationship:
+
+* `AUTHORIZES` - a relationship between a marketing authorization and a packaged product.
+  ** `MarketAuthorization` -> `AUTHORIZES` -> `PackagedProduct`
+
+* `GRANTED_BY` - a relationship between a marketing authorization and a regulatory agency.
+  ** `MarketAuthorization` -> `GRANTED_BY` -> `RegulatoryAgency`
 
 Relationships:
 
-MarketAuthorization
-→ AUTHORIZES → PackagedProduct
+* `HELD_BY` - a relationship between a marketing authorization and an organisation.
+  ** `MarketAuthorization` -> `HELD_BY` -> `Organisation`
 
-MarketAuthorization
-→ GRANTED_BY →
-RegulatoryAgency
-	•	name: BfArM
-	•	country: DE
-
-MarketAuthorization
-→ HELD_BY →
-Organisation
-	•	name: Bayer AG
-	•	country: DE
+==== Active Substance Manufacturing Layer
 
 ActiveSubstanceManufacturing nodes represent the manufacturing of an active substance.
 
-Substance (Acetylsalicylic Acid)
-→ MANUFACTURED_BY (role: active_substance) →
-Organisation
-	•	name: Bayer Active Science
+Node:
+* `ActiveSubstanceManufacturing` - the manufacturing of an active substance.
+  ** `name` - Bayer Active Science
+
+Relationship:
+* `MANUFACTURED_BY` - a relationship between an active substance manufacturing and an organisation.
+  ** `ActiveSubstanceManufacturing` -> `MANUFACTURED_BY` -> `Organisation`
 
 === Simplified Graph Flow (Hierarchy View)
-
+```
 Substance
 └── HAS_MODIFICATION → SubstanceModification
 └── MANUFACTURED_BY → Organisation (Active Substance Manufacturer)
@@ -171,3 +186,4 @@ MarketAuthorization
 ├── AUTHORIZES → PackagedProduct
 ├── GRANTED_BY → RegulatoryAgency
 └── HELD_BY → Organisation
+```
