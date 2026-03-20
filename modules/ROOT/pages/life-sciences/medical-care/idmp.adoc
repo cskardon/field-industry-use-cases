@@ -55,14 +55,14 @@ Substance nodes represent the active substance of a pharmaceutical product.
 Node:
 
 * `Substance` - the active substance present in a medicinal product.
-  ** `name` - Acetylsalicylic Acid
-  ** `inn` - aspirin
-  ** `molecular_formula` - C9H8O4
-  ** `cas` - 50-78-2
+  ** `name:` - Acetylsalicylic Acid
+  ** `inn:` - aspirin
+  ** `molecular_formula:` - C9H8O4
+  ** `cas:` - 50-78-2
 
 * `SubstanceModification` - describes chemical modification of a substance.
-  ** `type` - acid
-  ** `parent_substance` - salicylic acid
+  ** `type:` - acid
+  ** `parent_substance:` - salicylic acid
 
 Relationship:
 
@@ -76,19 +76,19 @@ PharmaceuticalProduct nodes represent the pharmaceutical product, which is a com
 Node:
 
 * `PharmaceuticalProduct` - the pharmaceutical product, which is a combination of a substance and a dose form.
-  ** `name` - Aspirin 500mg Tablet
-  ** `product_id` - EU/1/…
+  ** `name:` - Aspirin 500mg Tablet
+  ** `product_id:` - EU/1/…
 
 * `DoseForm` - the dose form of a pharmaceutical product.
-  ** `term` - film-coated tablet
-  ** `edqm_code` - 10219000
+  ** `term:` - film-coated tablet
+  ** `edqm_code:` - 10219000
 
 * `RouteOfAdministration` - the route of administration of a pharmaceutical product.
-  ** `term` - oral use
-  ** `edqm_code` - 20053000
+  ** `term:` - oral use
+  ** `edqm_code:` - 20053000
 
 * `Organisation` - the organisation that manufactures a pharmaceutical product.
-  ** `name` - Bayer Manufacturing GmbH	
+  ** `name:` - Bayer Manufacturing GmbH	
 Relationships:
 
 * `HAS_DOSE_FORM` - a relationship between a pharmaceutical product and a dose form.
@@ -106,14 +106,14 @@ Relationships:
 ==== Packaging & Authorization Layer
 
 * `PackagedProduct` - the packaged product, which is a combination of a pharmaceutical product and a pack size.
-  ** `pack_size` - 20
-  ** `barcode` - 4007971013704
+  ** `pack_size:` - 20
+  ** `barcode:` - 4007971013704
 
 Relationship:
 
 * `PackagedProduct` - the packaged product, which is a combination of a pharmaceutical product and a pack size.
-  ** `pack_size` - 20
-  ** `barcode` - 4007971013704
+  ** `pack_size:` - 20
+  ** `barcode:` - 4007971013704
 
 * `IS_PRESENTATION_OF` - a relationship between a packaged product and a pharmaceutical product.
   ** `PackagedProduct` -> `IS_PRESENTATION_OF` -> `PharmaceuticalProduct`
@@ -125,22 +125,22 @@ MarketingAuthorization nodes represent the marketing authorization for a package
 Node:
 
 * `MarketAuthorization` - the marketing authorization for a packaged product.
-  ** `auth_number` - DE-12345
-  ** `status` - active
-  ** `expiry` - 2027-06-01
+  ** `auth_number:` - DE-12345
+  ** `status:` - active
+  ** `expiry:` - 2027-06-01
 
 * `MarketAuthorization` - the marketing authorization for a packaged product.
-  ** `auth_number` - DE-12345
-  ** `status` - active
-  ** `expiry` - 2027-06-01
+  ** `auth_number:` - DE-12345
+  ** `status:` - active
+  ** `expiry:` - 2027-06-01
 
 * `RegulatoryAgency` - the regulatory agency that granted the marketing authorization.
-  ** `name` - BfArM
-  ** `country` - DE
+  ** `name:` - BfArM
+  ** `country:` - DE
 
 * `Organisation` - the organisation that holds the marketing authorization.
-  ** `name` - Bayer AG
-  ** `country` - DE
+  ** `name:` - Bayer AG
+  ** `country:` - DE
 
 Relationship:
 
@@ -161,7 +161,7 @@ ActiveSubstanceManufacturing nodes represent the manufacturing of an active subs
 
 Node:
 * `ActiveSubstanceManufacturing` - the manufacturing of an active substance.
-  ** `name` - Bayer Active Science
+  ** `name:` - Bayer Active Science
 
 Relationship:
 * `MANUFACTURED_BY` - a relationship between an active substance manufacturing and an organisation.
