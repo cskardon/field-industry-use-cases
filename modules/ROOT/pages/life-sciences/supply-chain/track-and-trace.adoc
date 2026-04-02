@@ -2,49 +2,52 @@
 
 == Introduction
 
-Supply chain track and trace in life sciences is the ability to follow the movement of pharmaceutical products, medical devices, or ingredients through the supply chain from manufacture to the point of dispensing or use. Regulatory requirements such as the (https://www.fda.gov/drugs/drug-supply-chain-integrity/drug-supply-chain-security-act-dscsa[Drug Supply Chain Security Act (DSCSA)]) in the United States and the (https://ec.europa.eu/health/medicinal-products/eudralex/eudralex-volume-4_en[Falsified Medicines Directive]) in the European Union mandate serialization and traceability to combat counterfeiting, diversion, and recalls. Businesses need to answer questions such as: Where did this batch go? Which lots are affected by a recall? Who handled this serialized unit? Graph databases excel at representing and querying these multi-hop custody and movement relationships across manufacturers, distributors, wholesalers, and dispensers.
-
-In the food industry, traceability and recall requirements are governed by regulations such as the U.S. Food Safety Modernization Act (FSMA) and the EU General Food Law (https://www.legislation.gov.uk/eur/2002/178/contents[Regulation (EC) No 178/2002]). Food producers and distributors must be able to identify and trace affected lots and typically respond to regulatory trace requests within 24 hours, ensuring rapid containment of contaminated or unsafe products.
+Supply chain track and trace in life sciences is the ability to follow the movement of pharmaceutical products, medical devices, or ingredients through the supply chain from manufacture to the point of dispensing or use. Regulatory requirements such as the (https://www.fda.gov/drugs/drug-supply-chain-integrity/drug-supply-chain-security-act-dscsa[Drug Supply Chain Security Act (DSCSA)]) in the United States and the (https://ec.europa.eu/health/medicinal-products/eudralex/eudralex-volume-4_en[Falsified Medicines Directive (EU-FMD)]) in the European Union mandate serialization and traceability to combat counterfeiting, diversion, and recalls. Businesses need to answer questions such as: Where did this batch go? Which lots are affected by a recall? Who handled this serialized unit? Graph databases excel at representing and querying these multi-hop custody and movement relationships across manufacturers, distributors, wholesalers, and dispensers.
 
 === Challenges
 
-Traditional ERP-based reporting approaches are fundamentally ill-suited for this challenge. Tracing a single faulty batch through a complex, multi-level ingredient and production hierarchy can take hours or even days when relying on relational database joins across movement tables. The deeper the production hierarchy, the worse the performance degrades.
+Traditional Enterprise Resource Planning (ERP)-based reporting approaches are fundamentally ill-suited for this challenge. Tracing a single faulty batch through a complex, multi-level ingredient and production hierarchy can take hours or even days when relying on relational database joins across movement tables. The deeper the production hierarchy, the worse the performance degrades.
 
 == Scenario
 
-Imagine a pharmaceutical manufacturer producing tablet batches, each derived from various raw materials and packaging components (API, excipients, foil, cartons), and processed through a multi-step manufacturing pipeline. These intermediate and finished batches are then combined into deliveries distributed to customers and wholesalers. One day, the quality team receives an alert that an input API batch is potentially contaminated. The organization must instantly identify not only which finished deliveries could contain traces of the suspect lot, but also the chain of intermediate process orders and batches through which contamination may have propagated. At the same time, a reverse trace is needed: for any particular customer delivery, the full lineage of all raw material batches, transfer events, and plant movements must be reconstructed.
+Imagine a pharmaceutical manufacturer producing tablet batches, each derived from various raw materials and packaging components (Active Pharmaceutical Ingredients (API), excipients, foil, cartons), and processed through a multi-step manufacturing pipeline. These intermediate and finished batches are then combined into deliveries distributed to customers and wholesalers. One day, the quality team receives an alert that an input API batch is potentially contaminated. The organization must instantly identify not only which finished deliveries could contain traces of the suspect lot, but also the chain of intermediate process orders and batches through which contamination may have propagated. At the same time, a reverse trace is needed: for any particular customer delivery, the full lineage of all raw material batches, transfer events, and plant movements must be reconstructed.
 
-The complexity arises because each batch can participate in many-to-many relationships: a single raw batch may feed multiple process orders and spawn several derived batches, which are then packaged together in varied configurations. Each delivery could aggregate material from multiple sources, and one suspect input could affect dozens of downstream customers across numerous supply chain handoffs. Matching and traversing these movement, transformation, and delivery relationships is a classic graph problem—one where identifying all connected paths, impacts, and upstream/downstream nodes across variable depths is virtually impossible (or prohibitively slow) using traditional relational queries but is native, fast, and flexible in a graph database.
+The complexity arises because each batch can participate in many-to-many relationships: a single raw batch may feed multiple process orders and spawn several derived batches, which are then packaged together in varied configurations. Each delivery could aggregate material from multiple sources, and one suspect input could affect dozens of downstream customers across numerous supply chain handoffs. Matching and traversing these movement, transformation, and delivery relationships is a classic graph problem, where identifying all connected paths, impacts, and upstream/downstream nodes across variable depths is virtually impossible (or prohibitively slow) using traditional relational queries but is native, fast, and flexible in a graph database.
 
 == Solution
 
 === Why Graph?
 
-The traceability problem is inherently a graph traversal problem. The pharmaceutical ingredient supply chain is a directed graph of batches connected through production and logistics events. Neo4j's native graph storage and Cypher path traversal engine make multi-hop queries across this structure orders of magnitude faster than equivalent relational approaches.
-Key advantages of the graph approach are the following.
-Index-free adjacency. Each node directly references its neighbors, so traversal cost scales with the number of relevant paths rather than the size of the full dataset.
-Variable-depth path queries. **Cypher's variable-length path syntax natively handles unlimited-depth traversal with a single, readable query.**
-Rich relationship types. Movement semantics such as issued, received, transferred, and delivered are encoded directly as typed, directional relationships with quantitative properties.
-Near real-time sync. Delta loading via Cypher scripts every 5 minutes keeps the graph current with ERP state, ensuring no material movement is missed in a recall scope calculation.
+The traceability problem is inherently a graph traversal problem. The pharmaceutical ingredient supply chain is a directed graph of batches connected through production and logistics events. Neo4j's native graph storage and Cypher path traversal engine make multi-hop queries across this structure orders of magnitude faster than equivalent relational approaches. Key advantages of the graph approach are the following:
 
-This approach meets EU FMD reporting requirements within the 24-hour detection window and is equally capable of supporting DSCSA electronic tracing obligations in the US market, transforming a painful multi-hour ERP reporting exercise into a seconds-long graph traversal.
+* Index-free adjacency. Each node directly references its neighbors, so traversal cost scales with the number of relevant paths rather than the size of the full dataset.
+* Variable-depth path queries. **Cypher's variable-length path syntax natively handles unlimited-depth traversal with a single, readable query.**
+* Rich relationship types. Movement semantics such as issued, received, transferred, and delivered are encoded directly as typed, directional relationships with quantitative properties.
+* Near real-time sync. Delta loading via Cypher scripts every 5 minutes keeps the graph current with ERP state, ensuring no material movement is missed in a recall scope calculation.
+
+This approach meets EU-FMD reporting requirements within the 24-hour detection window and is equally capable of supporting DSCSA electronic tracing obligations in the US market, transforming a painful multi-hour ERP reporting exercise into a seconds-long graph traversal.
 
 This implementation enabled traversing 50,000+ deliveries across up to 52 supply chain levels in just ~2 seconds, providing near real-time trace results at scale.
 
 
 === Architecture
+
 The production architecture consists of four layers.
 
 ==== ERP Replication Layer
+
 The SAP ERP system replicates movement data in real time to a Microsoft SQL Server instance hosted on Azure using SAP SLT (System Landscape Transformation). This staging layer buffers raw movement records before they are loaded into Neo4j.
 
 ==== Graph Loading Layer
+
 Cypher scripts run on a 5-minute delta cycle, reading new movement records from SQL Server and loading them into the Neo4j Traceability Graph. During loading, aggregated TOTAL_* relationships are calculated and written to the graph alongside the raw movement data.
 
 ==== Traceability Graph (Neo4j)
+
 The core analytical engine. A path calculation engine implemented in Cypher handles forward and backward traversals. All traceability queries and reports execute against this graph.
 
 ==== Frontend and Monitoring
+
 A web-based traceability dashboard queries Neo4j via the Neo4j driver, presenting batch-to-delivery reports, affected customer lists, and mass balance views. Query performance and system health are monitored via Prometheus, with logs forwarded to Elasticsearch and Kibana.
 
 .Architecture Diagram
@@ -361,13 +364,13 @@ CREATE CONSTRAINT dl_lineId       IF NOT EXISTS
 
 // ── PurchaseOrders ───────────────────────────────────────────
 MERGE (pur1:PurchaseOrder {poNr: 'PUR-2024-0001'})
-SET pur1 += {vendor: 'BioSynth AG',  vendorCity: 'Basel',     vendorCountry: 'CH'};
+SET pur1 += {vendor: 'BioSynth AG',  vendorCity: 'Basel',     vendorCountry: 'CH'}
 
 MERGE (pur2:PurchaseOrder {poNr: 'PUR-2024-0002'})
-SET pur2 += {vendor: 'ExcipChem BV', vendorCity: 'Amsterdam', vendorCountry: 'NL'};
+SET pur2 += {vendor: 'ExcipChem BV', vendorCity: 'Amsterdam', vendorCountry: 'NL'}
 
 MERGE (pur3:PurchaseOrder {poNr: 'PUR-2024-0003'})
-SET pur3 += {vendor: 'PackMat GmbH', vendorCity: 'Frankfurt', vendorCountry: 'DE'};
+SET pur3 += {vendor: 'PackMat GmbH', vendorCity: 'Frankfurt', vendorCountry: 'DE'}
 
 
 // ── Batches (20) ─────────────────────────────────────────────
@@ -376,210 +379,209 @@ MERGE (b01:Batch {batchNr: '1100_1101475_2899901'})
 SET b01 += {materialNr: 'MAT-API-001',
             materialDesc: 'Ibuprofen API 99.5%',
             plant: '1000', bestBeforeDate: date('2026-12-31'),
-            quantity: 500.0, unit: 'KG', status: 'SUSPECT'};
+            quantity: 500.0, unit: 'KG', status: 'SUSPECT'}
 
 // B02  Ibuprofen Granulate — output of PO01, 4% yield loss
 MERGE (b02:Batch {batchNr: '1000_GRN_20240112'})
 SET b02 += {materialNr: 'MAT-INT-001',
             materialDesc: 'Ibuprofen Granulate',
             plant: '1000', bestBeforeDate: date('2026-12-31'),
-            quantity: 480.0, unit: 'KG'};
+            quantity: 480.0, unit: 'KG'}
 
 // B03  Ibuprofen Granulate — QC reclassification (BATCH_TRANSFER from B02)
 MERGE (b03:Batch {batchNr: '1000_GRN_20240113'})
 SET b03 += {materialNr: 'MAT-INT-001',
             materialDesc: 'Ibuprofen Granulate QC Released',
             plant: '1000', bestBeforeDate: date('2026-12-31'),
-            quantity: 480.0, unit: 'KG'};
+            quantity: 480.0, unit: 'KG'}
 
 // B04  Ibuprofen Granulate at plant 2000 (PLANT_TRANSFER from B03)
 MERGE (b04:Batch {batchNr: '2000_GRN_20240115'})
 SET b04 += {materialNr: 'MAT-INT-001',
             materialDesc: 'Ibuprofen Granulate',
             plant: '2000', bestBeforeDate: date('2026-12-31'),
-            quantity: 480.0, unit: 'KG'};
+            quantity: 480.0, unit: 'KG'}
 
 // B05  Microcrystalline Cellulose PH102 — excipient, NOT suspect
 MERGE (b05:Batch {batchNr: 'EXT-MCC-20240114'})
 SET b05 += {materialNr: 'MAT-EXC-001',
             materialDesc: 'Microcrystalline Cellulose PH102',
             plant: '2000', bestBeforeDate: date('2027-06-30'),
-            quantity: 120.0, unit: 'KG'};
+            quantity: 120.0, unit: 'KG'}
 
 // B06  Tablet Blend — output of PO02 (B04 480 kg + B05 120 kg = 600 kg)
 MERGE (b06:Batch {batchNr: '2000_BLN_20240119'})
 SET b06 += {materialNr: 'MAT-INT-002',
             materialDesc: 'Ibuprofen Tablet Blend',
             plant: '2000', bestBeforeDate: date('2026-12-31'),
-            quantity: 600.0, unit: 'KG'};
+            quantity: 600.0, unit: 'KG'}
 
 // B07  Hydroxypropyl Cellulose LF — binder excipient, NOT suspect
 MERGE (b07:Batch {batchNr: 'EXT-HPC-20240118'})
 SET b07 += {materialNr: 'MAT-EXC-002',
             materialDesc: 'Hydroxypropyl Cellulose LF',
             plant: '2000', bestBeforeDate: date('2027-03-31'),
-            quantity: 60.0, unit: 'KG'};
+            quantity: 60.0, unit: 'KG'}
 
 // B08  Tablet Bulk Line A — output of PO03 (B06 300 kg + B07 30 kg = 330 kg)
 MERGE (b08:Batch {batchNr: '2000_TAB_A_20240123'})
 SET b08 += {materialNr: 'MAT-INT-003',
             materialDesc: 'Ibuprofen 400mg Tablet Bulk Line A',
             plant: '2000', bestBeforeDate: date('2026-12-31'),
-            quantity: 330.0, unit: 'KG'};
+            quantity: 330.0, unit: 'KG'}
 
 // B09  Tablet Bulk Line B — output of PO04 (B06 300 kg + B07 30 kg = 330 kg)
 MERGE (b09:Batch {batchNr: '2000_TAB_B_20240123'})
 SET b09 += {materialNr: 'MAT-INT-003',
             materialDesc: 'Ibuprofen 400mg Tablet Bulk Line B',
             plant: '2000', bestBeforeDate: date('2026-12-31'),
-            quantity: 330.0, unit: 'KG'};
+            quantity: 330.0, unit: 'KG'}
 
 // B10  Film Coating Agent Opadry White — NOT suspect
 MERGE (b10:Batch {batchNr: 'EXT-CTG-20240124'})
 SET b10 += {materialNr: 'MAT-EXC-003',
             materialDesc: 'Opadry White Film Coating',
             plant: '2000', bestBeforeDate: date('2028-01-01'),
-            quantity: 6.0, unit: 'KG'};
+            quantity: 6.0, unit: 'KG'}
 
 // B11  Film-Coated Tablets Line A — output of PO05 (B08 330 kg + B10 3 kg = 333 kg)
 MERGE (b11:Batch {batchNr: '2000_FCT_A_20240127'})
 SET b11 += {materialNr: 'MAT-INT-004',
             materialDesc: 'Ibuprofen 400mg Film-Coated Tablets Line A',
             plant: '2000', bestBeforeDate: date('2026-12-31'),
-            quantity: 333.0, unit: 'KG'};
+            quantity: 333.0, unit: 'KG'}
 
 // B12  Film-Coated Tablets Line A at plant 3000 (PLANT_TRANSFER from B11)
 MERGE (b12:Batch {batchNr: '3000_FCT_A_20240129'})
 SET b12 += {materialNr: 'MAT-INT-004',
             materialDesc: 'Ibuprofen 400mg Film-Coated Tablets Line A',
             plant: '3000', bestBeforeDate: date('2026-12-31'),
-            quantity: 333.0, unit: 'KG'};
+            quantity: 333.0, unit: 'KG'}
 
 // B13  Film-Coated Tablets Line B — output of PO06 (B09 330 kg + B10 3 kg = 333 kg)
 MERGE (b13:Batch {batchNr: '2000_FCT_B_20240127'})
 SET b13 += {materialNr: 'MAT-INT-004',
             materialDesc: 'Ibuprofen 400mg Film-Coated Tablets Line B',
             plant: '2000', bestBeforeDate: date('2026-12-31'),
-            quantity: 333.0, unit: 'KG'};
+            quantity: 333.0, unit: 'KG'}
 
 // B14  Film-Coated Tablets Line B at plant 3000 (PLANT_TRANSFER from B13)
 MERGE (b14:Batch {batchNr: '3000_FCT_B_20240129'})
 SET b14 += {materialNr: 'MAT-INT-004',
             materialDesc: 'Ibuprofen 400mg Film-Coated Tablets Line B',
             plant: '3000', bestBeforeDate: date('2026-12-31'),
-            quantity: 333.0, unit: 'KG'};
+            quantity: 333.0, unit: 'KG'}
 
 // B15  Aluminium Blister Foil 250 mic — packaging, NOT suspect
 MERGE (b15:Batch {batchNr: 'EXT-BLI-20240128'})
 SET b15 += {materialNr: 'MAT-PKG-001',
             materialDesc: 'Aluminium Blister Foil 250 mic',
             plant: '3000', bestBeforeDate: date('2028-06-30'),
-            quantity: 500.0, unit: 'M2'};
+            quantity: 500.0, unit: 'M2'}
 
 // B16  Blisters 10-tab Line A — output of PO07 (33,300 blisters)
 MERGE (b16:Batch {batchNr: '3000_BLS_A_20240202'})
 SET b16 += {materialNr: 'MAT-FIN-001',
             materialDesc: 'Ibuprofen 400mg Blister 10 Tablets Line A',
             plant: '3000', bestBeforeDate: date('2026-12-31'),
-            quantity: 33300.0, unit: 'BL'};
+            quantity: 33300.0, unit: 'BL'}
 
 // B17  Blisters 10-tab Line B — output of PO08 (33,300 blisters)
 MERGE (b17:Batch {batchNr: '3000_BLS_B_20240202'})
 SET b17 += {materialNr: 'MAT-FIN-001',
             materialDesc: 'Ibuprofen 400mg Blister 10 Tablets Line B',
             plant: '3000', bestBeforeDate: date('2026-12-31'),
-            quantity: 33300.0, unit: 'BL'};
+            quantity: 33300.0, unit: 'BL'}
 
 // B18  Folding Carton 2-Blister — packaging, NOT suspect
 MERGE (b18:Batch {batchNr: 'EXT-CTN-20240201'})
 SET b18 += {materialNr: 'MAT-PKG-002',
             materialDesc: 'Folding Carton Ibuprofen 400mg 2-Blister',
             plant: '3000', bestBeforeDate: date('2028-06-30'),
-            quantity: 70000.0, unit: 'PC'};
+            quantity: 70000.0, unit: 'PC'}
 
 // B19  Boxed Product Line A — output of PO09 (16,650 boxes)
 MERGE (b19:Batch {batchNr: '3000_BOX_A_20240207'})
 SET b19 += {materialNr: 'MAT-FIN-002',
             materialDesc: 'Ibuprofen 400mg 2x10 Tablet Box Line A',
             plant: '3000', bestBeforeDate: date('2026-12-31'),
-            quantity: 16650.0, unit: 'BOX'};
+            quantity: 16650.0, unit: 'BOX'}
 
 // B20  Boxed Product Line B — output of PO10 (16,650 boxes)
 MERGE (b20:Batch {batchNr: '3000_BOX_B_20240207'})
 SET b20 += {materialNr: 'MAT-FIN-002',
             materialDesc: 'Ibuprofen 400mg 2x10 Tablet Box Line B',
             plant: '3000', bestBeforeDate: date('2026-12-31'),
-            quantity: 16650.0, unit: 'BOX'};
+            quantity: 16650.0, unit: 'BOX'}
 
 
 // ── ProcessOrders (10) ───────────────────────────────────────
 MERGE (po01:ProcessOrder {orderNr: 'PO-2024-001'})
 SET po01 += {plant: '1000', material: 'MAT-INT-001',
              description: 'API Granulation',
-             startDate: date('2024-01-10'), endDate: date('2024-01-12')};
+             startDate: date('2024-01-10'), endDate: date('2024-01-12')}
 
 MERGE (po02:ProcessOrder {orderNr: 'PO-2024-002'})
 SET po02 += {plant: '2000', material: 'MAT-INT-002',
              description: 'Tablet Blending',
-             startDate: date('2024-01-18'), endDate: date('2024-01-19')};
+             startDate: date('2024-01-18'), endDate: date('2024-01-19')}
 
 MERGE (po03:ProcessOrder {orderNr: 'PO-2024-003'})
 SET po03 += {plant: '2000', material: 'MAT-INT-003',
              description: 'Tablet Compression Line A',
-             startDate: date('2024-01-22'), endDate: date('2024-01-23')};
+             startDate: date('2024-01-22'), endDate: date('2024-01-23')}
 
 MERGE (po04:ProcessOrder {orderNr: 'PO-2024-004'})
 SET po04 += {plant: '2000', material: 'MAT-INT-003',
              description: 'Tablet Compression Line B',
-             startDate: date('2024-01-22'), endDate: date('2024-01-23')};
+             startDate: date('2024-01-22'), endDate: date('2024-01-23')}
 
 MERGE (po05:ProcessOrder {orderNr: 'PO-2024-005'})
 SET po05 += {plant: '2000', material: 'MAT-INT-004',
              description: 'Film Coating Line A',
-             startDate: date('2024-01-25'), endDate: date('2024-01-26')};
+             startDate: date('2024-01-25'), endDate: date('2024-01-26')}
 
 MERGE (po06:ProcessOrder {orderNr: 'PO-2024-006'})
 SET po06 += {plant: '2000', material: 'MAT-INT-004',
              description: 'Film Coating Line B',
-             startDate: date('2024-01-25'), endDate: date('2024-01-27')};
+             startDate: date('2024-01-25'), endDate: date('2024-01-27')}
 
 MERGE (po07:ProcessOrder {orderNr: 'PO-2024-007'})
 SET po07 += {plant: '3000', material: 'MAT-FIN-001',
              description: 'Primary Packaging Blistering Line A',
-             startDate: date('2024-02-01'), endDate: date('2024-02-02')};
+             startDate: date('2024-02-01'), endDate: date('2024-02-02')}
 
 MERGE (po08:ProcessOrder {orderNr: 'PO-2024-008'})
 SET po08 += {plant: '3000', material: 'MAT-FIN-001',
              description: 'Primary Packaging Blistering Line B',
-             startDate: date('2024-02-02'), endDate: date('2024-02-03')};
+             startDate: date('2024-02-02'), endDate: date('2024-02-03')}
 
 MERGE (po09:ProcessOrder {orderNr: 'PO-2024-009'})
 SET po09 += {plant: '3000', material: 'MAT-FIN-002',
              description: 'Secondary Packaging Cartoning Line A',
-             startDate: date('2024-02-05'), endDate: date('2024-02-06')};
+             startDate: date('2024-02-05'), endDate: date('2024-02-06')}
 
 MERGE (po10:ProcessOrder {orderNr: 'PO-2024-010'})
 SET po10 += {plant: '3000', material: 'MAT-FIN-002',
              description: 'Secondary Packaging Cartoning Line B',
-             startDate: date('2024-02-06'), endDate: date('2024-02-07')};
+             startDate: date('2024-02-06'), endDate: date('2024-02-07')}
 
 
 // ── DeliveryLines (5) ────────────────────────────────────────
 MERGE (dl01:DeliveryLine {lineId: 'DL-2024-001-01'})
-SET dl01 += {deliveryNr: 'DEL-2024-001', material: 'MAT-FIN-002', quantity: 5000.0};
+SET dl01 += {deliveryNr: 'DEL-2024-001', material: 'MAT-FIN-002', quantity: 5000.0}
 
 MERGE (dl02:DeliveryLine {lineId: 'DL-2024-002-01'})
-SET dl02 += {deliveryNr: 'DEL-2024-002', material: 'MAT-FIN-002', quantity: 3000.0};
+SET dl02 += {deliveryNr: 'DEL-2024-002', material: 'MAT-FIN-002', quantity: 3000.0}
 
 MERGE (dl03:DeliveryLine {lineId: 'DL-2024-003-01'})
-SET dl03 += {deliveryNr: 'DEL-2024-003', material: 'MAT-FIN-002', quantity: 5000.0};
+SET dl03 += {deliveryNr: 'DEL-2024-003', material: 'MAT-FIN-002', quantity: 5000.0}
 
 MERGE (dl04:DeliveryLine {lineId: 'DL-2024-004-01'})
-SET dl04 += {deliveryNr: 'DEL-2024-004', material: 'MAT-FIN-002', quantity: 5000.0};
+SET dl04 += {deliveryNr: 'DEL-2024-004', material: 'MAT-FIN-002', quantity: 5000.0}
 
 MERGE (dl05:DeliveryLine {lineId: 'DL-2024-005-01'})
-SET dl05 += {deliveryNr: 'DEL-2024-005', material: 'MAT-FIN-002', quantity: 4000.0};
-
+SET dl05 += {deliveryNr: 'DEL-2024-005', material: 'MAT-FIN-002', quantity: 4000.0}
 
 // ── Deliveries (5, 4 unique customers) ───────────────────────
 // B19 (Line A) ships to DEL-001, DEL-002, DEL-005
@@ -587,22 +589,22 @@ SET dl05 += {deliveryNr: 'DEL-2024-005', material: 'MAT-FIN-002', quantity: 4000
 MERGE (del01:Delivery {deliveryNr: 'DEL-2024-001'})
 SET del01 += {soldToCustomer: 'PHARM-DIST-DACH GmbH',
               shipToCustomer: 'Berlin Central Warehouse',
-              lastPostingDate: date('2024-02-15'), quantity: 5000.0};
+              lastPostingDate: date('2024-02-15'), quantity: 5000.0}
 
 MERGE (del02:Delivery {deliveryNr: 'DEL-2024-002'})
 SET del02 += {soldToCustomer: 'EuroPharma Distribution SA',
               shipToCustomer: 'Lyon Distribution Centre',
-              lastPostingDate: date('2024-02-16'), quantity: 3000.0};
+              lastPostingDate: date('2024-02-16'), quantity: 3000.0}
 
 MERGE (del03:Delivery {deliveryNr: 'DEL-2024-003'})
 SET del03 += {soldToCustomer: 'NordPharma AB',
               shipToCustomer: 'Stockholm Pharma DC',
-              lastPostingDate: date('2024-02-17'), quantity: 5000.0};
+              lastPostingDate: date('2024-02-17'), quantity: 5000.0}
 
 MERGE (del04:Delivery {deliveryNr: 'DEL-2024-004'})
 SET del04 += {soldToCustomer: 'IberiaMed SL',
               shipToCustomer: 'Madrid Pharma Depot',
-              lastPostingDate: date('2024-02-18'), quantity: 5000.0};
+              lastPostingDate: date('2024-02-18'), quantity: 5000.0}
 
 MERGE (del05:Delivery {deliveryNr: 'DEL-2024-005'})
 SET del05 += {soldToCustomer: 'PHARM-DIST-DACH GmbH',
@@ -1166,74 +1168,16 @@ MERGE (b)-[r:TOTAL_ISSUE_DELIVERY]->(d)
 SET r.quantity = 5000.0,
     r.partInReceived = round(5000.0/16650.0 * 10000) / 10000;  // 0.3003
 
-
-// ============================================================
-// VERIFICATION QUERIES (run after loading)
-// ============================================================
-
-// 1. Node counts — expect:
-//    Batch=20, ProcessOrder=10, PurchaseOrder=3,
-//    DeliveryLine=5, Delivery=5
-MATCH (n) RETURN labels(n) AS label, count(n) AS count
-ORDER BY count DESC;
-
-// 2. Forward trace from suspect batch — expect 5 deliveries
-MATCH path = (s:Batch {batchNr:'1100_1101475_2899901'})
-  -[:TOTAL_ISSUED|TOTAL_RECEIVED|TOTAL_BATCH_TRANSFER|
-     TOTAL_PLANT_TRANSFER|TOTAL_MAPPED_DELIVERY|
-     TOTAL_ISSUE_DELIVERY*1..100]->
-  (d:Delivery)
-WITH d, length(path) AS pathLength,
-     [r IN relationships(path) | r.partInReceived] AS parts
-RETURN d.deliveryNr          AS deliveryNr,
-       d.soldToCustomer      AS customer,
-       d.shipToCustomer      AS shipTo,
-       pathLength,
-       round(reduce(p=1.0, x IN parts | p*x) * 10000) / 100
-         AS contaminationPct
-ORDER BY contaminationPct DESC;
-
-// 3. Backward trace from DEL-2024-001 — expect 6 leaf batches:
-//    B01(API), B05(MCC), B07(HPC), B10(Coating), B15(Foil), B18(Cartons)
-MATCH path = (d:Delivery {deliveryNr:'DEL-2024-001'})
-  <-[:TOTAL_ISSUED|TOTAL_RECEIVED|TOTAL_BATCH_TRANSFER|
-      TOTAL_PLANT_TRANSFER|TOTAL_MAPPED_DELIVERY|
-      TOTAL_ISSUE_DELIVERY*1..100]-
-  (raw:Batch)
-WHERE NOT (raw)<-[:TOTAL_RECEIVED]-()
-RETURN DISTINCT raw.batchNr AS rawBatch, raw.materialDesc AS description,
-       raw.plant AS plant, length(path) AS depth
-ORDER BY depth;
-
-// 4. Regulatory KPI summary — expect:
-//    totalDeliveries=5, uniqueCustomers=4, maxLevel=16
-MATCH path = (s:Batch {batchNr:'1100_1101475_2899901'})
-  -[:TOTAL_ISSUED|TOTAL_RECEIVED|TOTAL_BATCH_TRANSFER|
-     TOTAL_PLANT_TRANSFER|TOTAL_MAPPED_DELIVERY|
-     TOTAL_ISSUE_DELIVERY*1..100]->(n)
-WITH n, length(path) AS depth, labels(n) AS lbl
-RETURN
-  count(CASE WHEN 'Delivery' IN lbl THEN 1 END) AS totalDeliveries,
-  count(DISTINCT CASE WHEN 'Delivery' IN lbl THEN n.soldToCustomer END)
-    AS uniqueCustomers,
-  count(DISTINCT CASE WHEN 'Batch' IN lbl THEN n.batchNr END)
-    AS deliveryBatches,
-  max(depth) AS maxLevel;
 ----
 
 == Cypher Queries
 
-Example queries:
-
-* *Path of a serialized unit*: Start from a `SerializedUnit` by `serial_number`, traverse `SHIPPED_IN` to `Shipment`, then `FROM`/`TO` to `Location`, and optionally `OPERATED_BY` to `Party`, ordered by time.
-* *All locations that received a batch*: Start from `Batch` by `batch_number`, traverse to `Shipment` and then `TO`->`Location`, return distinct locations (and optionally parties).
-* *Full chain of custody for a unit*: Same path as the first query, returning a chronological list of locations and parties.
-
-One important design decision to note: `partInReceived = 1.0` is set on all `TOTAL_RECEIVED` relationships. This is necessary because the forward trace in Query 1 uses an unfiltered `reduce()` that would propagate `null` if any relationship in the path lacks the property. The packaging steps (blistering, cartoning) also use `partInReceived = 1.0` for the tablet batch since contamination is tracked as a drug content fraction, not a mass fraction. The packaging material relationships carry `0.0` to reflect that foil and cartons contribute no suspect API.
+The following queries demonstrate a variety of use cases enabled by the graph model, from forward and backward tracing to regulatory reporting and prioritization based on contamination thresholds.
 
 === Forward Trace: Find All Deliveries Impacted by a Faulty Batch
 
-This is the core contamination recall query. Starting from a known suspect batch, it traverses the entire downstream graph through process orders, derived batches, plant transfers, and deliveries up to an arbitrary depth.
+This is the core _contamination recall_ query. Starting from a known suspect batch, it traverses the entire downstream graph through process orders, derived batches, plant transfers, and deliveries up to an arbitrary depth.
+
 [source, cypher, role=noheader]
 ----
 // Forward trace: find all deliveries downstream of a suspect batch
