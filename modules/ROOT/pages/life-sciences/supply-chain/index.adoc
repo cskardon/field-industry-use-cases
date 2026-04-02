@@ -4,6 +4,8 @@ Supply chain in life sciences encompasses the movement of pharmaceutical product
 
 == Use Cases
 
+The use cases below illustrate how Neo4j can help discover and analyze relationships in the supply chain, enabling better decision-making and operational efficiency.
+
 === Track and Trace
 
 Track and trace enables following products and batches through the supply chain for recalls, anti-counterfeiting, and regulatory compliance.
