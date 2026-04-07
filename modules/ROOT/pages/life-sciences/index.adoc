@@ -71,3 +71,9 @@ Single-omics data integration focuses on combining datasets within a single omic
 Multi-omics data integration evolves the single-omics implementation into a more comprehensive view of biological systems.
 
 * xref:life-sciences/research-development/multi-omics.adoc[]
+
+== Supply Chain
+
+The healthcare and life sciences supply chain is a complex network of manufacturers, distributors, healthcare providers, and patients. It involves the production, distribution, and delivery of pharmaceuticals, medical devices, and other healthcare products. Managing this supply chain effectively is crucial for ensuring that patients receive the necessary treatments in a timely manner.
+
+* xref:life-sciences/supply-chain/index.adoc[]
