@@ -74,6 +74,14 @@ Multi-omics data integration evolves the single-omics implementation into a more
 
 == Supply Chain
 
-The healthcare and life sciences supply chain is a complex network of manufacturers, distributors, healthcare providers, and patients. It involves the production, distribution, and delivery of pharmaceuticals, medical devices, and other healthcare products. Managing this supply chain effectively is crucial for ensuring that patients receive the necessary treatments in a timely manner.
+Supply chain in life sciences encompasses the movement of pharmaceutical products, active ingredients, and medical devices from manufacturing through distribution to dispensers and patients. Graph databases support traceability, recall management, and compliance with serialization and chain-of-custody regulations.
 
-* xref:life-sciences/supply-chain/index.adoc[]
+== Use Cases
+
+The use cases below illustrate how Neo4j can help discover and analyze relationships in the supply chain, enabling better decision-making and operational efficiency.
+
+=== Track and Trace
+
+Track and trace enables following products and batches through the supply chain for recalls, anti-counterfeiting, and regulatory compliance.
+
+* xref:life-sciences/supply-chain/track-and-trace.adoc[Track and Trace]
