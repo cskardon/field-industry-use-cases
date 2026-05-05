@@ -1,1343 +1,935 @@
 = Track and Trace
 
-== Introduction
+Pharmaceutical track and trace is the end-to-end ability to follow a product, or any of its components, through every step of the supply chain, from the raw materials delivered by a supplier to the finished goods dispensed at a pharmacy. Regulatory frameworks such as the https://www.fda.gov/drugs/drug-supply-chain-security-act-dscsa[Drug Supply Chain Security Act (DSCSA)] in the United States and the https://health.ec.europa.eu/medicinal-products/falsified-medicines_en[Falsified Medicines Directive (FMD)] in Europe mandate this capability, requiring manufacturers, wholesalers, and dispensers to verify, capture, and share product movement data at the serialised unit level.
 
-Supply chain track and trace in life sciences is the ability to follow the movement of pharmaceutical products, medical devices, or ingredients through the supply chain from manufacture to the point of dispensing or use. Regulatory requirements such as the (https://www.fda.gov/drugs/drug-supply-chain-integrity/drug-supply-chain-security-act-dscsa[Drug Supply Chain Security Act (DSCSA)]) in the United States and the (https://ec.europa.eu/health/medicinal-products/eudralex/eudralex-volume-4_en[Falsified Medicines Directive (EU-FMD)]) in the European Union mandate serialization and traceability to combat counterfeiting, diversion, and recalls. Businesses need to answer questions such as: Where did this batch go? Which lots are affected by a recall? Who handled this serialized unit? Graph databases excel at representing and querying these multi-hop custody and movement relationships across manufacturers, distributors, wholesalers, and dispensers.
+Despite the regulatory imperative, most organisations still rely on a combination of ERP systems, spreadsheets, and document management tools to reconstruct batch history. These point-in-time, siloed records make simple questions - _"Which finished goods batches contain raw material lot X?"_ or _"What equipment was used across the full ancestry of a recalled product?"_ - surprisingly difficult and slow to answer.
 
-=== Challenges
-
-Traditional Enterprise Resource Planning (ERP)-based reporting approaches are fundamentally ill-suited for this challenge. Tracing a single faulty batch through a complex, multi-level ingredient and production hierarchy can take hours or even days when relying on relational database joins across movement tables. The deeper the production hierarchy, the worse the performance degrades.
+Graph databases reframe the problem. A pharmaceutical supply chain is, at its core, a network of connected entities: suppliers feed raw materials into production stages, equipment transforms those materials into batches, employees operate and certify the equipment, and distributors receive the finished product. Neo4j models this network natively, enabling multi-hop traceability queries that would require complex SQL joins across many tables to be expressed as concise, intuitive graph patterns.
 
 == Scenario
 
-Imagine a pharmaceutical manufacturer producing tablet batches, each derived from various raw materials and packaging components (Active Pharmaceutical Ingredients (API), excipients, foil, cartons), and processed through a multi-step manufacturing pipeline. These intermediate and finished batches are then combined into deliveries distributed to customers and wholesalers. One day, the quality team receives an alert that an input API batch is potentially contaminated. The organization must instantly identify not only which finished deliveries could contain traces of the suspect lot, but also the chain of intermediate process orders and batches through which contamination may have propagated. At the same time, a reverse trace is needed: for any particular customer delivery, the full lineage of all raw material batches, transfer events, and plant movements must be reconstructed.
+HeartPharma Ltd manufactures *Cardioxetin*, a first-line cardiovascular treatment available in 10 mg and 20 mg film-coated tablet formulations. The product is manufactured at sites in Dublin (API synthesis and granulation), Lyon (tabletting), and Rotterdam (packaging), before being distributed to EU and North American markets.
 
-The complexity arises because each batch can participate in many-to-many relationships: a single raw batch may feed multiple process orders and spawn several derived batches, which are then packaged together in varied configurations. Each delivery could aggregate material from multiple sources, and one suspect input could affect dozens of downstream customers across numerous supply chain handoffs. Matching and traversing these movement, transformation, and delivery relationships is a classic graph problem, where identifying all connected paths, impacts, and upstream/downstream nodes across variable depths is virtually impossible (or prohibitively slow) using traditional relational queries but is native, fast, and flexible in a graph database.
+During a routine quality review, the quality assurance team places a quality hold on a raw material batch - *LOT-RM-2024-001* - of the Cardioxetin Base Compound supplied by SynthChem GmbH. They need to answer several urgent questions:
+
+* Which downstream batches - API, bulk granulate, drug product, and finished goods - were produced using this raw material lot?
+* Which distributors received finished product containing this raw material?
+* What equipment was involved in manufacturing the affected batches, and were any other products processed on the same equipment around the same time?
+* Were all operators involved in those production runs fully certified for the equipment they used?
+* Is the base compound sourced from more than one supplier, or does this hold create a single-supplier bottleneck that will disrupt future production?
+
+These questions cut across batch records, production run logs, equipment maintenance records, operator certification data, and distribution records - all of which are typically held in different systems.
 
 == Solution
 
-=== Why Graph?
+Neo4j models the supply chain as a single, connected graph where suppliers, raw materials, production stages, batches, equipment, employees, and distributors are all first-class nodes linked by typed relationships. Tracing a batch from its raw material origin to a distributor becomes a single variable-length path query - no joins, no ETL, no cross-referencing separate reports.
 
-The traceability problem is inherently a graph traversal problem. The pharmaceutical ingredient supply chain is a directed graph of batches connected through production and logistics events. Neo4j's native graph storage and Cypher path traversal engine make multi-hop queries across this structure orders of magnitude faster than equivalent relational approaches. Key advantages of the graph approach are the following:
+The graph structure supports both forward tracing (which downstream products are at risk from a supplier hold?) and backward tracing (what inputs contributed to a specific finished goods lot?). Common cause analysis - finding the shared equipment, operator, or raw material batch that links a set of adverse events - is a natural multi-hop pattern that graph databases execute efficiently even across large datasets.
 
-* Index-free adjacency. Each node directly references its neighbors, so traversal cost scales with the number of relevant paths rather than the size of the full dataset.
-* Variable-depth path queries. **Cypher's variable-length path syntax natively handles unlimited-depth traversal with a single, readable query.**
-* Rich relationship types. Movement semantics such as issued, received, transferred, and delivered are encoded directly as typed, directional relationships with quantitative properties.
-* Near real-time sync. Delta loading via Cypher scripts every 5 minutes keeps the graph current with ERP state, ensuring no material movement is missed in a recall scope calculation.
+Some specific advantages:
 
-This approach meets EU-FMD reporting requirements within the 24-hour detection window and is equally capable of supporting DSCSA electronic tracing obligations in the US market, transforming a painful multi-hour ERP reporting exercise into a seconds-long graph traversal.
+* *Instant blast radius*: a single Cypher query traverses the full batch lineage tree in milliseconds, regardless of how many hops separate the raw material from the distributor.
+* *Relationship-native queries*: questions about shared equipment, co-certified operators, and supply chain bypass paths are expressed directly as graph patterns rather than correlated subqueries.
+* *Flexible schema*: new entities (serialised unit scans, cold-chain sensor readings, adverse event reports) can be added to the graph without schema migrations or re-engineering existing queries.
 
-This implementation enabled traversing 50,000+ deliveries across up to 52 supply chain levels in just ~2 seconds, providing near real-time trace results at scale.
+== Data Model
 
+image::life-sciences/supply-chain/track-and-trace-model.svg[width=800]
 
-=== Architecture
+The graph model spans two complementary layers: the *product flow layer* and the *batch-production layer*.
 
-The production architecture consists of four layers.
+=== Product Flow Layer
 
-==== ERP Replication Layer
+The product flow layer describes the logical supply chain - the recipe-level path a product takes from raw material through to distribution.
 
-The SAP ERP system replicates movement data in real time to a Microsoft SQL Server instance hosted on Azure using SAP SLT (System Landscape Transformation). This staging layer buffers raw movement records before they are loaded into Neo4j.
+* *Suppliers* provide raw materials and are connected to `RM` nodes via `SUPPLIES_RM` relationships that carry a `supplierCapacity` property.
+* *RM* (Raw Material), *API* (Active Pharmaceutical Ingredient), *BULK*, *DP* (Drug Product), *FG* (Finished Goods), and *DIST* (Distribution Unit) nodes represent successive manufacturing stages. All carry `PRODUCT_FLOW` relationships connecting them in sequence, with properties such as `conversionRatio`, `inPercent`, `outPercent`, `globalBrand`, `strength`, `form`, `generation`, and `market`.
+* *Distributor* nodes represent regional distribution partners. The `DIST` stage connects to a `Distributor` via a `DISTRIBUTED_BY` relationship that carries the `demandQty` (units ordered).
 
-==== Graph Loading Layer
+=== Batch and Production Layer
 
-Cypher scripts run on a 5-minute delta cycle, reading new movement records from SQL Server and loading them into the Neo4j Traceability Graph. During loading, aggregated TOTAL_* relationships are calculated and written to the graph alongside the raw movement data.
+The batch-production layer tracks the physical execution of the supply chain - specific lots, the runs that produced them, and the people and machines involved.
 
-==== Traceability Graph (Neo4j)
+* *Batch* nodes represent individual production lots. They carry `lotNumber`, `materialType`, `dateProduced`, `location`, and product-identifying properties (`globalBrand`, `strength`, `form`, `generation`). Batch nodes connect to their product stage node via `IS_BATCH_FOR`, to their supplier via `SUPPLIES_BATCH`, and to downstream batches (and ultimately distributors) via `BATCH_FLOW`.
+* *ProductionRun* nodes represent a single machine run that produces a batch. They carry timing information (`startTime`, `finishTime`, `runDuration`) and connect to the output batch via `PRODUCED_BATCH` and to the equipment used via `USED_EQUIP`. The chain of consecutive runs on the same equipment is captured by `NEXT_RUN_EQUIP` relationships (with `idleDuration`), and the first run on each piece of equipment is flagged by `FIRST_RUN_EQUIP`.
+* *Equipment* nodes carry physical asset details (`equipID`, `nomenclature`, `manufacturer`, `model`, `serialNum`, `location`). Certified operators are linked via `IS_CERTIFIED_OPERATOR` (with `yearsExperience`).
+* *Employee* nodes record the workforce. An employee can `PERFORMED_RUN`, `PERFORMED_SETUP`, or `PERFORMED_POSTRUN` on the corresponding run-stage node.
+* *PreRunSetup* and *PostRunStage* nodes wrap each production run, capturing the `setupDuration` and `postRunDuration` (cleaning/sanitisation) respectively. They connect via `PREP_FOR_RUN` / `POSTRUN` to the `ProductionRun`, and via `EQUIP_SETUP` / `EQUIP_POSTRUN` to the `Equipment`. A shortened `postRunDuration` can flag a potential contamination risk between consecutive runs on the same equipment.
+* *GlobalBrand* nodes anchor the product family and connect to `Recipe` nodes via `HAS_RECIPE`.
 
-The core analytical engine. A path calculation engine implemented in Cypher handles forward and backward traversals. All traceability queries and reports execute against this graph.
+== Demo Data
 
-==== Frontend and Monitoring
+The dataset models the supply chain for *Cardioxetin* (10 mg and 20 mg film-coated tablets) manufactured by HeartPharma Ltd. It includes:
 
-A web-based traceability dashboard queries Neo4j via the Neo4j driver, presenting batch-to-delivery reports, affected customer lists, and mass balance views. Query performance and system health are monitored via Prometheus, with logs forwarded to Elasticsearch and Kibana.
+* 3 suppliers, 3 raw materials, 2 API stages, 2 bulk, 2 drug product, 2 finished goods, and 2 distribution units
+* 2 distributors (EU and North American markets)
+* 6 production batches - one of which (LOT-RM-2024-001) is placed on quality hold to drive the recall scenario
+* 3 pieces of equipment across 3 manufacturing sites
+* 3 employees with varying certification profiles
+* 4 production runs, 3 pre-run setups, and 3 post-run stages (one with a shortened cleaning window)
 
-.Architecture Diagram
-[listing,text]
-----
-ERP (SAP)
-   |  Realtime Replication
-   v
-SQL Server (Azure)
-   |  Cypher scripts, delta loading every 5 min
-   v
-Neo4j Traceability Graph <---- Neo4j Driver <---- Frontend (TRACE)
-   |
-   v  logging
-Prometheus ----> Elasticsearch + Kibana
-----
+*Key insights built into the data:*
 
+The Cardioxetin Base Compound (RM-001) is sourced exclusively from SynthChem GmbH - a single-supplier risk. Both the 10 mg and 20 mg strengths depend on this raw material for API synthesis. The Korsch Tablet Press (equip2) was used to manufacture both the 10 mg bulk granulate and the 20 mg finished goods batch, creating a potential cross-contamination vector if the suspect lot is confirmed out-of-specification.
 
-
-== Modelling
-
-The data model for pharmaceutical supply chain track-and-trace is designed around a few core node entities and the movement relationships that connect them through the manufacturing and distribution process. This structure enables powerful lineage, path, and impact queries across all levels of the supply network.
-
-**Core Node Labels**
-
-- `Batch`: Represents a uniquely identified lot of material (API, excipient, intermediate, or finished product). Holds properties such as batch number, material code, plant, manufacture/expiry dates, and status.
-- `ProcessOrder`: A manufacturing or packaging operation that consumes input batches and produces an output batch (i.e., transformation processes like synthesis, formulation, or packaging steps).
-- `PurchaseOrder`: Captures inbound procurement events (raw materials or APIs received from vendors), associated with one or more created batches.
-- `DeliveryLine`: A shipment event tying a specific batch (and quantity) to a customer order.
-- `Delivery`: The overall customer shipment (header), which may contain one or many `DeliveryLine` items, along with destination, date, and regulatory trace info.
-
-**Core Relationships (Lineage and Movement)**
-
-- `PURCHASE_RECEIVED`: (:PurchaseOrder)-[:PURCHASE_RECEIVED]->(:Batch)  
-  A material batch is received from an external supplier against a purchase order.
-
-- `BATCH_ISSUED`: (:Batch)-[:BATCH_ISSUED]->(:ProcessOrder)
-  A batch is issued/consumed as input for a specific process order.
-
-- `BATCH_RECEIVED`: (:ProcessOrder)-[:BATCH_RECEIVED]->(:Batch)
-  Completion of a process order produces a new batch output.
-
-- `BATCH_TRANSFER`: (:Batch)-[:BATCH_TRANSFER]->(:Batch)
-  Represents a transfer event within the same plant or warehouse between batches (e.g., for packaging or re-testing).
-
-- `PLANT_TRANSFER`: (:Batch)-[:PLANT_TRANSFER]->(:Batch)
-  Batch is transferred between sites (moves from one plant/location to another).
-
-- `DELIVERY_RECEIVED`: (:DeliveryLine)-[:DELIVERY_RECEIVED]->(:Batch)
-  A shipment event that logs receipt of a batch as part of a delivery document.
-
-- `MAPPED_DELIVERY`: (:DeliveryLine)-[:MAPPED_DELIVERY]->(:DeliveryLine)
-  For cases where inbound and outbound deliveries are cross-referenced (e.g., returns, recalls, re-shipments).
-
-- `TOTAL_*` relationships represent pre-aggregated summary movements between nodes for analytics and fast scope calculation (e.g., `:TOTAL_ISSUED`, `:TOTAL_RECEIVED`)
-  
-
-**Example Cypher: Creating a basic lineage fragment**
-
-Suppose we receive a new batch of API via purchase order, which is then issued to a process order and results in a finished batch. Here's how this might look in Cypher:
-
-```cypher
-CREATE (apiPo:PurchaseOrder {number: 'PO123', supplier: 'Acme Chemicals'})
-CREATE (apiBatch:Batch {batchNo: 'B001', material: 'API-XYZ', plant: 'PlantA'})
-CREATE (formulation:ProcessOrder {orderNo: 'PR456', type: 'Formulation'})
-CREATE (finalBatch:Batch {batchNo: 'B002', material: 'Tablet-XYZ', plant: 'PlantA'})
-CREATE (deliveryLine:DeliveryLine {lineNo: 'DL789', quantity: 1000})
-CREATE (delivery:Delivery {deliveryNo: 'D001', customer: 'PharmaDistCo'})
-
-MERGE (apiPo)-[:PURCHASE_RECEIVED]->(apiBatch)
-MERGE (apiBatch)-[:BATCH_ISSUED]->(formulation)
-MERGE (formulation)-[:BATCH_RECEIVED]->(finalBatch)
-MERGE (finalBatch)-[:DELIVERY_RECEIVED]->(deliveryLine)
-MERGE (deliveryLine)-[:IN_DELIVERY]->(delivery)
-```
-
-This produces a clear lineage:
-
-`PurchaseOrder` → `[PURCHASE_RECEIVED]` → `Batch` → `[BATCH_ISSUED]` → `ProcessOrder` → `[BATCH_RECEIVED]` → `Batch` → `[DELIVERY_RECEIVED]` → `DeliveryLine` → `[IN_DELIVERY]` → `Delivery`
-
-Such a chain allows immediate backward and forward tracing of materials through all manufacturing and shipment events, enabling high-confidence scope calculation in recalls and audit readiness.
-
-For large-scale supply chains, this model supports multi-hop traversals, "find all affected customers for a given (recalled) batch", and detailed movement analysis directly via Cypher queries.
-
-**Raw Movement Relationships**
-
-[cols="1,1,1,3", options="header"]
-|===
-| Relationship
-| From
-| To
-| Description
-
-| PURCHASE_RECEIVED
-| PurchaseOrder
-| Batch
-| Goods receipt against a purchase order (inbound API or raw material)
-
-| BATCH_RECEIVED
-| ProcessOrder
-| Batch
-| Goods receipt of a finished intermediate or finished batch from a process order
-
-| DELIVERY_RECEIVED
-| DeliveryLine
-| Batch
-| Goods receipt via inbound delivery document
-
-| BATCH_ISSUED
-| Batch
-| ProcessOrder
-| Raw material or intermediate batch issued as input to a process order
-
-| BATCH_TRANSFER
-| Batch
-| Batch
-| Batch-to-batch transfer within the same plant
-
-| PLANT_TRANSFER
-| Batch
-| Batch
-| Inter-plant stock transfer across manufacturing sites
-
-| MAPPED_DELIVERY
-| DeliveryLine
-| DeliveryLine
-| Inbound delivery line mapped to an outbound delivery line
-|===
-
-**Aggregated TOTAL Relationships**
-[cols="1,1,1,2", options="header"]
-|===
-| Relationship
-| From
-| To
-| Key Properties
-
-| TOTAL_ISSUED
-| Batch
-| ProcessOrder
-| totalIssued, partInReceived
-
-| TOTAL_RECEIVED
-| ProcessOrder
-| Batch
-| totalReceived
-
-| TOTAL_BATCH_TRANSFER
-| Batch
-| Batch
-| totalTransferred, partInReceived
-
-| TOTAL_PLANT_TRANSFER
-| Batch
-| Batch
-| totalTransferred, partInReceived
-
-| TOTAL_MAPPED_DELIVERY
-| Batch
-| Batch
-| partInReceived
-
-| TOTAL_ISSUE_DELIVERY
-| Batch
-| Delivery
-| quantity
-|===
-
-=== Data Model - Raw Movement Types
-
-Typically, these movement types are loaded directly from the various SAP movement types. Because multiple movements can occur between the same two nodes, such as a batch issued to a process order in several partial quantities, these relationships are granular and may be repeated between the same pair of nodes.
-
-==== Movement Type A - Goods Receipts on Purchase Orders or Process Orders
-
-.Type A Data Model
-image::life-sciences/supply-chain/Industry_Use_Cases_Pharma_Track_and_Trace_Raw_Movements_Type_A.png[height=300]
-
-==== Movement Type B - Batch Issue on Process Orders
-
-.Type B Data Model
-image::life-sciences/supply-chain/Industry_Use_Cases_Pharma_Track_and_Trace_Raw_Movements_Type_B.png[height=300]
-
-==== Movement Type C - Batch-to-Batch Transfers
-
-.Type C Data Model
-image::life-sciences/supply-chain/Industry_Use_Cases_Pharma_Track_and_Trace_Raw_Movements_Type_C.png[height=300]
-
-==== Movement Type D - Inter-plant Stock Transfers
-
-.Type D Data Model
-image::life-sciences/supply-chain/Industry_Use_Cases_Pharma_Track_and_Trace_Raw_Movements_Type_D.png[height=300]
-
-==== Movement Type E - Goods Receipts on Delivery Lines
-
-==== Movement Type F - Inbound Delivery Line Mapping to Outbound Delivery Lines
-
-=== Data Model - Aggregated TOTAL Relationships
-
-Because traceability only requires traversal once between any two points, raw movements are aggregated into a single TOTAL_* relationship per source-target pair. These relationships carry calculated properties including the percentage of the issued material present in the received batch (partInReceived), which enables quantitative contamination scope and mass balance analysis.
-
-.Total Relationships Data Model
-image::life-sciences/supply-chain/Industry_Use_Cases_Pharma_Track_and_Trace_Total_Relationships.png[width=800]
-
-=== Demo Data
-
-This demo data is a simplified example of a pharmaceutical supply chain track and trace graph. It includes 20 batches, 2 parallel lines A/B from blend split, and 5 deliveries.
-
-[cols="1,2", options="header"]
-|===
-| Category
-| Count
-
-| Batches
-| 20 (B01 suspect API through B20 finished boxes)
-
-| ProcessOrders
-| 10 (Granulation → Blending → Compression × 2 → Coating × 2 → Blistering × 2 → Cartoning × 2)
-
-| PurchaseOrders
-| 3 (API supplier, excipient supplier, packaging supplier)
-
-| DeliveryLines
-| 5 each, 4 unique customers
-
-| Plants
-| 5 (1000 Synthesis/Granulation, 2000 Blending / Compression / Film Coating, 3000 Primary & Secondary Packaging)
-|===
-
-The following Cypher statement will create the example graph in the Neo4j database:
+The following Cypher statement will `MERGE` the example graph into your Neo4j database:
 
 [source, cypher, role=noheader]
 ----
 // ============================================================
-// PHARMA TRACK & TRACE — DEMO DATASET
-// Product  : Ibuprofen 400mg Film-Coated Tablets, 2-Blister Box
-// Suspect  : Batch 1100_1101475_2899901 (API, supplier BioSynth AG)
-// Plants   : 1000 Synthesis/Granulation
-//            2000 Blending / Compression / Film Coating
-//            3000 Primary & Secondary Packaging
-//
-// BATCH LINEAGE (20 batches, 2 parallel lines A/B from blend split)
-//
-//  [PUR-0001]                    [PUR-0002]          [PUR-0003]
-//      |                             |                    |
-//     B01(API★)  B05(MCC)  B07(HPC) B10(Coat)  B15(Foil) B18(Ctn)
-//      |                   |         |           |         |
-//     PO01                 |         |           |         |
-//      |                   |         |           |         |
-//     B02──BTRANS──B03──PTRANS──B04  |           |         |
-//                                 \  |           |         |
-//                                  PO02          |         |
-//                                   |            |         |
-//                                  B06           |         |
-//                           ______/ \______      |         |
-//                          /               \     |         |
-//                  B07─►PO03           PO04◄─B07 |         |
-//                          |               |     |         |
-//                         B08            B09     |         |
-//                          |               |     |         |
-//               B10─►PO05               PO06◄─B10|         |
-//                          |               |              |
-//                         B11            B13             |
-//                    PTRANS|          PTRANS|             |
-//                         B12            B14             |
-//                          |               |             |
-//               B15─►PO07               PO08◄─B15        |
-//                          |               |             |
-//                         B16            B17             |
-//                          |               |             |
-//               B18─►PO09               PO10◄─B18        |
-//                          |               |
-//                         B19            B20
-//                       /  |  \          /  \
-//                   DEL1 DEL2 DEL5   DEL3  DEL4
-//
-// EXPECTED QUERY RESULTS (forward trace from B01):
-//   DEL-2024-001  DACH GmbH Berlin      pathLen=16  contam≈21.65%
-//   DEL-2024-002  EuroPharma Lyon       pathLen=16  contam≈12.99%
-//   DEL-2024-003  NordPharma Stockholm  pathLen=16  contam≈21.65%
-//   DEL-2024-004  IberiaMed Madrid      pathLen=16  contam≈21.65%
-//   DEL-2024-005  DACH GmbH Munich      pathLen=16  contam≈17.32%
-//
-//   Regulatory KPIs: 5 deliveries, 4 unique customers, maxLevel=16
-//
-// partInReceived calculation method:
-//   TOTAL_ISSUED  : issuedQty / totalReceivedByProcessOrder
-//   TOTAL_RECEIVED: 1.0  (process order fully produces output batch)
-//   TOTAL_*TRANSFER: 1.0 (1-to-1 material movement, no dilution)
-//   TOTAL_ISSUE_DELIVERY: deliveredQty / batchQty (delivery fraction)
-//
-// RUN ORDER: Section 1 → 2 → 3 → 4
+// GLOBAL BRAND
 // ============================================================
 
+MERGE (cardioxetin:GlobalBrand {
+  globalBrand: 'Cardioxetin',
+  molecularForm: 'SM'
+})
 
 // ============================================================
-// SECTION 1 — CONSTRAINTS
+// SUPPLIERS
 // ============================================================
 
-CREATE CONSTRAINT batch_batchNr   IF NOT EXISTS
-  FOR (n:Batch)         REQUIRE n.batchNr    IS UNIQUE;
-CREATE CONSTRAINT po_orderNr      IF NOT EXISTS
-  FOR (n:ProcessOrder)  REQUIRE n.orderNr    IS UNIQUE;
-CREATE CONSTRAINT pur_poNr        IF NOT EXISTS
-  FOR (n:PurchaseOrder) REQUIRE n.poNr       IS UNIQUE;
-CREATE CONSTRAINT del_deliveryNr  IF NOT EXISTS
-  FOR (n:Delivery)      REQUIRE n.deliveryNr IS UNIQUE;
-CREATE CONSTRAINT dl_lineId       IF NOT EXISTS
-  FOR (n:DeliveryLine)  REQUIRE n.lineId     IS UNIQUE;
-
-
-// ============================================================
-// SECTION 2 — NODES
-// ============================================================
-
-// ── PurchaseOrders ───────────────────────────────────────────
-MERGE (pur1:PurchaseOrder {poNr: 'PUR-2024-0001'})
-SET pur1 += {vendor: 'BioSynth AG',  vendorCity: 'Basel',     vendorCountry: 'CH'}
-
-MERGE (pur2:PurchaseOrder {poNr: 'PUR-2024-0002'})
-SET pur2 += {vendor: 'ExcipChem BV', vendorCity: 'Amsterdam', vendorCountry: 'NL'}
-
-MERGE (pur3:PurchaseOrder {poNr: 'PUR-2024-0003'})
-SET pur3 += {vendor: 'PackMat GmbH', vendorCity: 'Frankfurt', vendorCountry: 'DE'}
-
-
-// ── Batches (20) ─────────────────────────────────────────────
-// B01  ★ SUSPECT BATCH ★  Raw API — sole source of contamination
-MERGE (b01:Batch {batchNr: '1100_1101475_2899901'})
-SET b01 += {materialNr: 'MAT-API-001',
-            materialDesc: 'Ibuprofen API 99.5%',
-            plant: '1000', bestBeforeDate: date('2026-12-31'),
-            quantity: 500.0, unit: 'KG', status: 'SUSPECT'}
-
-// B02  Ibuprofen Granulate — output of PO01, 4% yield loss
-MERGE (b02:Batch {batchNr: '1000_GRN_20240112'})
-SET b02 += {materialNr: 'MAT-INT-001',
-            materialDesc: 'Ibuprofen Granulate',
-            plant: '1000', bestBeforeDate: date('2026-12-31'),
-            quantity: 480.0, unit: 'KG'}
-
-// B03  Ibuprofen Granulate — QC reclassification (BATCH_TRANSFER from B02)
-MERGE (b03:Batch {batchNr: '1000_GRN_20240113'})
-SET b03 += {materialNr: 'MAT-INT-001',
-            materialDesc: 'Ibuprofen Granulate QC Released',
-            plant: '1000', bestBeforeDate: date('2026-12-31'),
-            quantity: 480.0, unit: 'KG'}
-
-// B04  Ibuprofen Granulate at plant 2000 (PLANT_TRANSFER from B03)
-MERGE (b04:Batch {batchNr: '2000_GRN_20240115'})
-SET b04 += {materialNr: 'MAT-INT-001',
-            materialDesc: 'Ibuprofen Granulate',
-            plant: '2000', bestBeforeDate: date('2026-12-31'),
-            quantity: 480.0, unit: 'KG'}
-
-// B05  Microcrystalline Cellulose PH102 — excipient, NOT suspect
-MERGE (b05:Batch {batchNr: 'EXT-MCC-20240114'})
-SET b05 += {materialNr: 'MAT-EXC-001',
-            materialDesc: 'Microcrystalline Cellulose PH102',
-            plant: '2000', bestBeforeDate: date('2027-06-30'),
-            quantity: 120.0, unit: 'KG'}
-
-// B06  Tablet Blend — output of PO02 (B04 480 kg + B05 120 kg = 600 kg)
-MERGE (b06:Batch {batchNr: '2000_BLN_20240119'})
-SET b06 += {materialNr: 'MAT-INT-002',
-            materialDesc: 'Ibuprofen Tablet Blend',
-            plant: '2000', bestBeforeDate: date('2026-12-31'),
-            quantity: 600.0, unit: 'KG'}
-
-// B07  Hydroxypropyl Cellulose LF — binder excipient, NOT suspect
-MERGE (b07:Batch {batchNr: 'EXT-HPC-20240118'})
-SET b07 += {materialNr: 'MAT-EXC-002',
-            materialDesc: 'Hydroxypropyl Cellulose LF',
-            plant: '2000', bestBeforeDate: date('2027-03-31'),
-            quantity: 60.0, unit: 'KG'}
-
-// B08  Tablet Bulk Line A — output of PO03 (B06 300 kg + B07 30 kg = 330 kg)
-MERGE (b08:Batch {batchNr: '2000_TAB_A_20240123'})
-SET b08 += {materialNr: 'MAT-INT-003',
-            materialDesc: 'Ibuprofen 400mg Tablet Bulk Line A',
-            plant: '2000', bestBeforeDate: date('2026-12-31'),
-            quantity: 330.0, unit: 'KG'}
-
-// B09  Tablet Bulk Line B — output of PO04 (B06 300 kg + B07 30 kg = 330 kg)
-MERGE (b09:Batch {batchNr: '2000_TAB_B_20240123'})
-SET b09 += {materialNr: 'MAT-INT-003',
-            materialDesc: 'Ibuprofen 400mg Tablet Bulk Line B',
-            plant: '2000', bestBeforeDate: date('2026-12-31'),
-            quantity: 330.0, unit: 'KG'}
-
-// B10  Film Coating Agent Opadry White — NOT suspect
-MERGE (b10:Batch {batchNr: 'EXT-CTG-20240124'})
-SET b10 += {materialNr: 'MAT-EXC-003',
-            materialDesc: 'Opadry White Film Coating',
-            plant: '2000', bestBeforeDate: date('2028-01-01'),
-            quantity: 6.0, unit: 'KG'}
-
-// B11  Film-Coated Tablets Line A — output of PO05 (B08 330 kg + B10 3 kg = 333 kg)
-MERGE (b11:Batch {batchNr: '2000_FCT_A_20240127'})
-SET b11 += {materialNr: 'MAT-INT-004',
-            materialDesc: 'Ibuprofen 400mg Film-Coated Tablets Line A',
-            plant: '2000', bestBeforeDate: date('2026-12-31'),
-            quantity: 333.0, unit: 'KG'}
-
-// B12  Film-Coated Tablets Line A at plant 3000 (PLANT_TRANSFER from B11)
-MERGE (b12:Batch {batchNr: '3000_FCT_A_20240129'})
-SET b12 += {materialNr: 'MAT-INT-004',
-            materialDesc: 'Ibuprofen 400mg Film-Coated Tablets Line A',
-            plant: '3000', bestBeforeDate: date('2026-12-31'),
-            quantity: 333.0, unit: 'KG'}
-
-// B13  Film-Coated Tablets Line B — output of PO06 (B09 330 kg + B10 3 kg = 333 kg)
-MERGE (b13:Batch {batchNr: '2000_FCT_B_20240127'})
-SET b13 += {materialNr: 'MAT-INT-004',
-            materialDesc: 'Ibuprofen 400mg Film-Coated Tablets Line B',
-            plant: '2000', bestBeforeDate: date('2026-12-31'),
-            quantity: 333.0, unit: 'KG'}
-
-// B14  Film-Coated Tablets Line B at plant 3000 (PLANT_TRANSFER from B13)
-MERGE (b14:Batch {batchNr: '3000_FCT_B_20240129'})
-SET b14 += {materialNr: 'MAT-INT-004',
-            materialDesc: 'Ibuprofen 400mg Film-Coated Tablets Line B',
-            plant: '3000', bestBeforeDate: date('2026-12-31'),
-            quantity: 333.0, unit: 'KG'}
-
-// B15  Aluminium Blister Foil 250 mic — packaging, NOT suspect
-MERGE (b15:Batch {batchNr: 'EXT-BLI-20240128'})
-SET b15 += {materialNr: 'MAT-PKG-001',
-            materialDesc: 'Aluminium Blister Foil 250 mic',
-            plant: '3000', bestBeforeDate: date('2028-06-30'),
-            quantity: 500.0, unit: 'M2'}
-
-// B16  Blisters 10-tab Line A — output of PO07 (33,300 blisters)
-MERGE (b16:Batch {batchNr: '3000_BLS_A_20240202'})
-SET b16 += {materialNr: 'MAT-FIN-001',
-            materialDesc: 'Ibuprofen 400mg Blister 10 Tablets Line A',
-            plant: '3000', bestBeforeDate: date('2026-12-31'),
-            quantity: 33300.0, unit: 'BL'}
-
-// B17  Blisters 10-tab Line B — output of PO08 (33,300 blisters)
-MERGE (b17:Batch {batchNr: '3000_BLS_B_20240202'})
-SET b17 += {materialNr: 'MAT-FIN-001',
-            materialDesc: 'Ibuprofen 400mg Blister 10 Tablets Line B',
-            plant: '3000', bestBeforeDate: date('2026-12-31'),
-            quantity: 33300.0, unit: 'BL'}
-
-// B18  Folding Carton 2-Blister — packaging, NOT suspect
-MERGE (b18:Batch {batchNr: 'EXT-CTN-20240201'})
-SET b18 += {materialNr: 'MAT-PKG-002',
-            materialDesc: 'Folding Carton Ibuprofen 400mg 2-Blister',
-            plant: '3000', bestBeforeDate: date('2028-06-30'),
-            quantity: 70000.0, unit: 'PC'}
-
-// B19  Boxed Product Line A — output of PO09 (16,650 boxes)
-MERGE (b19:Batch {batchNr: '3000_BOX_A_20240207'})
-SET b19 += {materialNr: 'MAT-FIN-002',
-            materialDesc: 'Ibuprofen 400mg 2x10 Tablet Box Line A',
-            plant: '3000', bestBeforeDate: date('2026-12-31'),
-            quantity: 16650.0, unit: 'BOX'}
-
-// B20  Boxed Product Line B — output of PO10 (16,650 boxes)
-MERGE (b20:Batch {batchNr: '3000_BOX_B_20240207'})
-SET b20 += {materialNr: 'MAT-FIN-002',
-            materialDesc: 'Ibuprofen 400mg 2x10 Tablet Box Line B',
-            plant: '3000', bestBeforeDate: date('2026-12-31'),
-            quantity: 16650.0, unit: 'BOX'}
-
-
-// ── ProcessOrders (10) ───────────────────────────────────────
-MERGE (po01:ProcessOrder {orderNr: 'PO-2024-001'})
-SET po01 += {plant: '1000', material: 'MAT-INT-001',
-             description: 'API Granulation',
-             startDate: date('2024-01-10'), endDate: date('2024-01-12')}
-
-MERGE (po02:ProcessOrder {orderNr: 'PO-2024-002'})
-SET po02 += {plant: '2000', material: 'MAT-INT-002',
-             description: 'Tablet Blending',
-             startDate: date('2024-01-18'), endDate: date('2024-01-19')}
-
-MERGE (po03:ProcessOrder {orderNr: 'PO-2024-003'})
-SET po03 += {plant: '2000', material: 'MAT-INT-003',
-             description: 'Tablet Compression Line A',
-             startDate: date('2024-01-22'), endDate: date('2024-01-23')}
-
-MERGE (po04:ProcessOrder {orderNr: 'PO-2024-004'})
-SET po04 += {plant: '2000', material: 'MAT-INT-003',
-             description: 'Tablet Compression Line B',
-             startDate: date('2024-01-22'), endDate: date('2024-01-23')}
-
-MERGE (po05:ProcessOrder {orderNr: 'PO-2024-005'})
-SET po05 += {plant: '2000', material: 'MAT-INT-004',
-             description: 'Film Coating Line A',
-             startDate: date('2024-01-25'), endDate: date('2024-01-26')}
-
-MERGE (po06:ProcessOrder {orderNr: 'PO-2024-006'})
-SET po06 += {plant: '2000', material: 'MAT-INT-004',
-             description: 'Film Coating Line B',
-             startDate: date('2024-01-25'), endDate: date('2024-01-27')}
-
-MERGE (po07:ProcessOrder {orderNr: 'PO-2024-007'})
-SET po07 += {plant: '3000', material: 'MAT-FIN-001',
-             description: 'Primary Packaging Blistering Line A',
-             startDate: date('2024-02-01'), endDate: date('2024-02-02')}
-
-MERGE (po08:ProcessOrder {orderNr: 'PO-2024-008'})
-SET po08 += {plant: '3000', material: 'MAT-FIN-001',
-             description: 'Primary Packaging Blistering Line B',
-             startDate: date('2024-02-02'), endDate: date('2024-02-03')}
-
-MERGE (po09:ProcessOrder {orderNr: 'PO-2024-009'})
-SET po09 += {plant: '3000', material: 'MAT-FIN-002',
-             description: 'Secondary Packaging Cartoning Line A',
-             startDate: date('2024-02-05'), endDate: date('2024-02-06')}
-
-MERGE (po10:ProcessOrder {orderNr: 'PO-2024-010'})
-SET po10 += {plant: '3000', material: 'MAT-FIN-002',
-             description: 'Secondary Packaging Cartoning Line B',
-             startDate: date('2024-02-06'), endDate: date('2024-02-07')}
-
-
-// ── DeliveryLines (5) ────────────────────────────────────────
-MERGE (dl01:DeliveryLine {lineId: 'DL-2024-001-01'})
-SET dl01 += {deliveryNr: 'DEL-2024-001', material: 'MAT-FIN-002', quantity: 5000.0}
-
-MERGE (dl02:DeliveryLine {lineId: 'DL-2024-002-01'})
-SET dl02 += {deliveryNr: 'DEL-2024-002', material: 'MAT-FIN-002', quantity: 3000.0}
-
-MERGE (dl03:DeliveryLine {lineId: 'DL-2024-003-01'})
-SET dl03 += {deliveryNr: 'DEL-2024-003', material: 'MAT-FIN-002', quantity: 5000.0}
-
-MERGE (dl04:DeliveryLine {lineId: 'DL-2024-004-01'})
-SET dl04 += {deliveryNr: 'DEL-2024-004', material: 'MAT-FIN-002', quantity: 5000.0}
-
-MERGE (dl05:DeliveryLine {lineId: 'DL-2024-005-01'})
-SET dl05 += {deliveryNr: 'DEL-2024-005', material: 'MAT-FIN-002', quantity: 4000.0}
-
-// ── Deliveries (5, 4 unique customers) ───────────────────────
-// B19 (Line A) ships to DEL-001, DEL-002, DEL-005
-// B20 (Line B) ships to DEL-003, DEL-004
-MERGE (del01:Delivery {deliveryNr: 'DEL-2024-001'})
-SET del01 += {soldToCustomer: 'PHARM-DIST-DACH GmbH',
-              shipToCustomer: 'Berlin Central Warehouse',
-              lastPostingDate: date('2024-02-15'), quantity: 5000.0}
-
-MERGE (del02:Delivery {deliveryNr: 'DEL-2024-002'})
-SET del02 += {soldToCustomer: 'EuroPharma Distribution SA',
-              shipToCustomer: 'Lyon Distribution Centre',
-              lastPostingDate: date('2024-02-16'), quantity: 3000.0}
-
-MERGE (del03:Delivery {deliveryNr: 'DEL-2024-003'})
-SET del03 += {soldToCustomer: 'NordPharma AB',
-              shipToCustomer: 'Stockholm Pharma DC',
-              lastPostingDate: date('2024-02-17'), quantity: 5000.0}
-
-MERGE (del04:Delivery {deliveryNr: 'DEL-2024-004'})
-SET del04 += {soldToCustomer: 'IberiaMed SL',
-              shipToCustomer: 'Madrid Pharma Depot',
-              lastPostingDate: date('2024-02-18'), quantity: 5000.0}
-
-MERGE (del05:Delivery {deliveryNr: 'DEL-2024-005'})
-SET del05 += {soldToCustomer: 'PHARM-DIST-DACH GmbH',
-              shipToCustomer: 'Munich Warehouse',
-              lastPostingDate: date('2024-02-19'), quantity: 4000.0};
-
+MERGE (synthchem:Suppliers {
+  companyName: 'SynthChem GmbH',
+  countryCode: 'DE',
+  iso3Code: 'DEU'
+})
+MERGE (bioraw:Suppliers {
+  companyName: 'BioRaw Inc.',
+  countryCode: 'US',
+  iso3Code: 'USA'
+})
+MERGE (altchem:Suppliers {
+  companyName: 'AltChem Ingredients',
+  countryCode: 'DE',
+  iso3Code: 'DEU'
+})
 
 // ============================================================
-// SECTION 3 — RAW MOVEMENT RELATIONSHIPS
-// Multiple BATCH_ISSUED per pair reflect granular SAP goods
-// movement records (mvt 261).  Use CREATE (not MERGE) so
-// each partial posting is preserved as a separate relationship.
+// RAW MATERIALS
 // ============================================================
 
-// ── PURCHASE_RECEIVED ────────────────────────────────────────
-// B01: API received in 3 partial inbound postings (mvt 101)
-MATCH (n:PurchaseOrder {poNr:'PUR-2024-0001'}),
-      (b:Batch {batchNr:'1100_1101475_2899901'})
-CREATE (n)-[:PURCHASE_RECEIVED {quantity:200.0, movementType:'101',
-             postingDate:date('2024-01-06')}]->(b),
-       (n)-[:PURCHASE_RECEIVED {quantity:200.0, movementType:'101',
-             postingDate:date('2024-01-07')}]->(b),
-       (n)-[:PURCHASE_RECEIVED {quantity:100.0, movementType:'101',
-             postingDate:date('2024-01-08')}]->(b);
-
-// Excipients from ExcipChem BV
-MATCH (n:PurchaseOrder {poNr:'PUR-2024-0002'}),
-      (b:Batch {batchNr:'EXT-MCC-20240114'})
-CREATE (n)-[:PURCHASE_RECEIVED {quantity:120.0, movementType:'101',
-             postingDate:date('2024-01-14')}]->(b);
-
-MATCH (n:PurchaseOrder {poNr:'PUR-2024-0002'}),
-      (b:Batch {batchNr:'EXT-HPC-20240118'})
-CREATE (n)-[:PURCHASE_RECEIVED {quantity:60.0, movementType:'101',
-             postingDate:date('2024-01-18')}]->(b);
-
-MATCH (n:PurchaseOrder {poNr:'PUR-2024-0002'}),
-      (b:Batch {batchNr:'EXT-CTG-20240124'})
-CREATE (n)-[:PURCHASE_RECEIVED {quantity:6.0, movementType:'101',
-             postingDate:date('2024-01-24')}]->(b);
-
-// Packaging materials from PackMat GmbH
-MATCH (n:PurchaseOrder {poNr:'PUR-2024-0003'}),
-      (b:Batch {batchNr:'EXT-BLI-20240128'})
-CREATE (n)-[:PURCHASE_RECEIVED {quantity:500.0, movementType:'101',
-             postingDate:date('2024-01-28')}]->(b);
-
-MATCH (n:PurchaseOrder {poNr:'PUR-2024-0003'}),
-      (b:Batch {batchNr:'EXT-CTN-20240201'})
-CREATE (n)-[:PURCHASE_RECEIVED {quantity:70000.0, movementType:'101',
-             postingDate:date('2024-02-01')}]->(b);
-
-
-// ── BATCH_ISSUED (Batch → ProcessOrder, SAP mvt 261) ─────────
-// B01 → PO01: 3 partial goods issues over 2 days (500 kg total)
-MATCH (b:Batch {batchNr:'1100_1101475_2899901'}),
-      (p:ProcessOrder {orderNr:'PO-2024-001'})
-CREATE (b)-[:BATCH_ISSUED {quantity:200.0, movementType:'261',
-             postingDate:date('2024-01-10')}]->(p),
-       (b)-[:BATCH_ISSUED {quantity:200.0, movementType:'261',
-             postingDate:date('2024-01-11')}]->(p),
-       (b)-[:BATCH_ISSUED {quantity:100.0, movementType:'261',
-             postingDate:date('2024-01-11')}]->(p);
-
-// B04 + B05 → PO02: Blending (480 + 120 = 600 kg)
-MATCH (b:Batch {batchNr:'2000_GRN_20240115'}),
-      (p:ProcessOrder {orderNr:'PO-2024-002'})
-CREATE (b)-[:BATCH_ISSUED {quantity:240.0, movementType:'261',
-             postingDate:date('2024-01-18')}]->(p),
-       (b)-[:BATCH_ISSUED {quantity:240.0, movementType:'261',
-             postingDate:date('2024-01-19')}]->(p);
-
-MATCH (b:Batch {batchNr:'EXT-MCC-20240114'}),
-      (p:ProcessOrder {orderNr:'PO-2024-002'})
-CREATE (b)-[:BATCH_ISSUED {quantity:120.0, movementType:'261',
-             postingDate:date('2024-01-18')}]->(p);
-
-// B06 (300 kg) + B07 (30 kg) → PO03: Compression Line A (330 kg)
-MATCH (b:Batch {batchNr:'2000_BLN_20240119'}),
-      (p:ProcessOrder {orderNr:'PO-2024-003'})
-CREATE (b)-[:BATCH_ISSUED {quantity:180.0, movementType:'261',
-             postingDate:date('2024-01-22')}]->(p),
-       (b)-[:BATCH_ISSUED {quantity:120.0, movementType:'261',
-             postingDate:date('2024-01-22')}]->(p);
-
-MATCH (b:Batch {batchNr:'EXT-HPC-20240118'}),
-      (p:ProcessOrder {orderNr:'PO-2024-003'})
-CREATE (b)-[:BATCH_ISSUED {quantity:30.0, movementType:'261',
-             postingDate:date('2024-01-22')}]->(p);
-
-// B06 (300 kg) + B07 (30 kg) → PO04: Compression Line B (330 kg)
-MATCH (b:Batch {batchNr:'2000_BLN_20240119'}),
-      (p:ProcessOrder {orderNr:'PO-2024-004'})
-CREATE (b)-[:BATCH_ISSUED {quantity:170.0, movementType:'261',
-             postingDate:date('2024-01-22')}]->(p),
-       (b)-[:BATCH_ISSUED {quantity:130.0, movementType:'261',
-             postingDate:date('2024-01-23')}]->(p);
-
-MATCH (b:Batch {batchNr:'EXT-HPC-20240118'}),
-      (p:ProcessOrder {orderNr:'PO-2024-004'})
-CREATE (b)-[:BATCH_ISSUED {quantity:30.0, movementType:'261',
-             postingDate:date('2024-01-23')}]->(p);
-
-// B08 (330 kg) + B10 (3 kg) → PO05: Film Coating Line A (333 kg)
-MATCH (b:Batch {batchNr:'2000_TAB_A_20240123'}),
-      (p:ProcessOrder {orderNr:'PO-2024-005'})
-CREATE (b)-[:BATCH_ISSUED {quantity:330.0, movementType:'261',
-             postingDate:date('2024-01-25')}]->(p);
-
-MATCH (b:Batch {batchNr:'EXT-CTG-20240124'}),
-      (p:ProcessOrder {orderNr:'PO-2024-005'})
-CREATE (b)-[:BATCH_ISSUED {quantity:3.0, movementType:'261',
-             postingDate:date('2024-01-25')}]->(p);
-
-// B09 (330 kg) + B10 (3 kg) → PO06: Film Coating Line B (333 kg)
-MATCH (b:Batch {batchNr:'2000_TAB_B_20240123'}),
-      (p:ProcessOrder {orderNr:'PO-2024-006'})
-CREATE (b)-[:BATCH_ISSUED {quantity:330.0, movementType:'261',
-             postingDate:date('2024-01-25')}]->(p);
-
-MATCH (b:Batch {batchNr:'EXT-CTG-20240124'}),
-      (p:ProcessOrder {orderNr:'PO-2024-006'})
-CREATE (b)-[:BATCH_ISSUED {quantity:3.0, movementType:'261',
-             postingDate:date('2024-01-26')}]->(p);
-
-// B12 + B15 → PO07: Blistering Line A
-MATCH (b:Batch {batchNr:'3000_FCT_A_20240129'}),
-      (p:ProcessOrder {orderNr:'PO-2024-007'})
-CREATE (b)-[:BATCH_ISSUED {quantity:333.0, movementType:'261',
-             postingDate:date('2024-02-01')}]->(p);
-
-MATCH (b:Batch {batchNr:'EXT-BLI-20240128'}),
-      (p:ProcessOrder {orderNr:'PO-2024-007'})
-CREATE (b)-[:BATCH_ISSUED {quantity:250.0, movementType:'261',
-             postingDate:date('2024-02-01')}]->(p);
-
-// B14 + B15 → PO08: Blistering Line B
-MATCH (b:Batch {batchNr:'3000_FCT_B_20240129'}),
-      (p:ProcessOrder {orderNr:'PO-2024-008'})
-CREATE (b)-[:BATCH_ISSUED {quantity:333.0, movementType:'261',
-             postingDate:date('2024-02-02')}]->(p);
-
-MATCH (b:Batch {batchNr:'EXT-BLI-20240128'}),
-      (p:ProcessOrder {orderNr:'PO-2024-008'})
-CREATE (b)-[:BATCH_ISSUED {quantity:250.0, movementType:'261',
-             postingDate:date('2024-02-02')}]->(p);
-
-// B16 + B18 → PO09: Cartoning Line A
-MATCH (b:Batch {batchNr:'3000_BLS_A_20240202'}),
-      (p:ProcessOrder {orderNr:'PO-2024-009'})
-CREATE (b)-[:BATCH_ISSUED {quantity:33300.0, movementType:'261',
-             postingDate:date('2024-02-05')}]->(p);
-
-MATCH (b:Batch {batchNr:'EXT-CTN-20240201'}),
-      (p:ProcessOrder {orderNr:'PO-2024-009'})
-CREATE (b)-[:BATCH_ISSUED {quantity:33300.0, movementType:'261',
-             postingDate:date('2024-02-05')}]->(p);
-
-// B17 + B18 → PO10: Cartoning Line B
-MATCH (b:Batch {batchNr:'3000_BLS_B_20240202'}),
-      (p:ProcessOrder {orderNr:'PO-2024-010'})
-CREATE (b)-[:BATCH_ISSUED {quantity:33300.0, movementType:'261',
-             postingDate:date('2024-02-06')}]->(p);
-
-MATCH (b:Batch {batchNr:'EXT-CTN-20240201'}),
-      (p:ProcessOrder {orderNr:'PO-2024-010'})
-CREATE (b)-[:BATCH_ISSUED {quantity:33300.0, movementType:'261',
-             postingDate:date('2024-02-06')}]->(p);
-
-
-// ── BATCH_RECEIVED (ProcessOrder → Batch, SAP mvt 101) ───────
-MATCH (p:ProcessOrder {orderNr:'PO-2024-001'}),
-      (b:Batch {batchNr:'1000_GRN_20240112'})
-CREATE (p)-[:BATCH_RECEIVED {quantity:480.0, movementType:'101',
-             postingDate:date('2024-01-12')}]->(b);
-
-MATCH (p:ProcessOrder {orderNr:'PO-2024-002'}),
-      (b:Batch {batchNr:'2000_BLN_20240119'})
-CREATE (p)-[:BATCH_RECEIVED {quantity:600.0, movementType:'101',
-             postingDate:date('2024-01-19')}]->(b);
-
-MATCH (p:ProcessOrder {orderNr:'PO-2024-003'}),
-      (b:Batch {batchNr:'2000_TAB_A_20240123'})
-CREATE (p)-[:BATCH_RECEIVED {quantity:330.0, movementType:'101',
-             postingDate:date('2024-01-23')}]->(b);
-
-MATCH (p:ProcessOrder {orderNr:'PO-2024-004'}),
-      (b:Batch {batchNr:'2000_TAB_B_20240123'})
-CREATE (p)-[:BATCH_RECEIVED {quantity:330.0, movementType:'101',
-             postingDate:date('2024-01-23')}]->(b);
-
-MATCH (p:ProcessOrder {orderNr:'PO-2024-005'}),
-      (b:Batch {batchNr:'2000_FCT_A_20240127'})
-CREATE (p)-[:BATCH_RECEIVED {quantity:333.0, movementType:'101',
-             postingDate:date('2024-01-27')}]->(b);
-
-MATCH (p:ProcessOrder {orderNr:'PO-2024-006'}),
-      (b:Batch {batchNr:'2000_FCT_B_20240127'})
-CREATE (p)-[:BATCH_RECEIVED {quantity:333.0, movementType:'101',
-             postingDate:date('2024-01-27')}]->(b);
-
-MATCH (p:ProcessOrder {orderNr:'PO-2024-007'}),
-      (b:Batch {batchNr:'3000_BLS_A_20240202'})
-CREATE (p)-[:BATCH_RECEIVED {quantity:33300.0, movementType:'101',
-             postingDate:date('2024-02-02')}]->(b);
-
-MATCH (p:ProcessOrder {orderNr:'PO-2024-008'}),
-      (b:Batch {batchNr:'3000_BLS_B_20240202'})
-CREATE (p)-[:BATCH_RECEIVED {quantity:33300.0, movementType:'101',
-             postingDate:date('2024-02-03')}]->(b);
-
-MATCH (p:ProcessOrder {orderNr:'PO-2024-009'}),
-      (b:Batch {batchNr:'3000_BOX_A_20240207'})
-CREATE (p)-[:BATCH_RECEIVED {quantity:16650.0, movementType:'101',
-             postingDate:date('2024-02-07')}]->(b);
-
-MATCH (p:ProcessOrder {orderNr:'PO-2024-010'}),
-      (b:Batch {batchNr:'3000_BOX_B_20240207'})
-CREATE (p)-[:BATCH_RECEIVED {quantity:16650.0, movementType:'101',
-             postingDate:date('2024-02-07')}]->(b);
-
-
-// ── BATCH_TRANSFER (B02 → B03, SAP mvt 309) ──────────────────
-// QC reclassification within plant 1000
-MATCH (b1:Batch {batchNr:'1000_GRN_20240112'}),
-      (b2:Batch {batchNr:'1000_GRN_20240113'})
-CREATE (b1)-[:BATCH_TRANSFER {quantity:480.0, movementType:'309',
-              postingDate:date('2024-01-13')}]->(b2);
-
-
-// ── PLANT_TRANSFER (SAP mvt 303) ─────────────────────────────
-// B03 → B04 (plant 1000 → 2000)
-MATCH (b1:Batch {batchNr:'1000_GRN_20240113'}),
-      (b2:Batch {batchNr:'2000_GRN_20240115'})
-CREATE (b1)-[:PLANT_TRANSFER {quantity:480.0, movementType:'303',
-              fromPlant:'1000', toPlant:'2000',
-              postingDate:date('2024-01-15')}]->(b2);
-
-// B11 → B12 (plant 2000 → 3000, Line A)
-MATCH (b1:Batch {batchNr:'2000_FCT_A_20240127'}),
-      (b2:Batch {batchNr:'3000_FCT_A_20240129'})
-CREATE (b1)-[:PLANT_TRANSFER {quantity:333.0, movementType:'303',
-              fromPlant:'2000', toPlant:'3000',
-              postingDate:date('2024-01-29')}]->(b2);
-
-// B13 → B14 (plant 2000 → 3000, Line B)
-MATCH (b1:Batch {batchNr:'2000_FCT_B_20240127'}),
-      (b2:Batch {batchNr:'3000_FCT_B_20240129'})
-CREATE (b1)-[:PLANT_TRANSFER {quantity:333.0, movementType:'303',
-              fromPlant:'2000', toPlant:'3000',
-              postingDate:date('2024-01-29')}]->(b2);
-
-
-// ── DELIVERY_RECEIVED (DeliveryLine → Batch) ─────────────────
-MATCH (dl:DeliveryLine {lineId:'DL-2024-001-01'}),
-      (b:Batch {batchNr:'3000_BOX_A_20240207'})
-CREATE (dl)-[:DELIVERY_RECEIVED {quantity:5000.0}]->(b);
-
-MATCH (dl:DeliveryLine {lineId:'DL-2024-002-01'}),
-      (b:Batch {batchNr:'3000_BOX_A_20240207'})
-CREATE (dl)-[:DELIVERY_RECEIVED {quantity:3000.0}]->(b);
-
-MATCH (dl:DeliveryLine {lineId:'DL-2024-003-01'}),
-      (b:Batch {batchNr:'3000_BOX_B_20240207'})
-CREATE (dl)-[:DELIVERY_RECEIVED {quantity:5000.0}]->(b);
-
-MATCH (dl:DeliveryLine {lineId:'DL-2024-004-01'}),
-      (b:Batch {batchNr:'3000_BOX_B_20240207'})
-CREATE (dl)-[:DELIVERY_RECEIVED {quantity:5000.0}]->(b);
-
-MATCH (dl:DeliveryLine {lineId:'DL-2024-005-01'}),
-      (b:Batch {batchNr:'3000_BOX_A_20240207'})
-CREATE (dl)-[:DELIVERY_RECEIVED {quantity:4000.0}]->(b);
-
+MERGE (rm1:Product:RM {
+  productSKU: 'crx-rm-001',
+  globalBrand: 'Cardioxetin',
+  description: 'Cardioxetin Base Compound Tablet 10mg',
+  form: 'Tablet',
+  strength: '10mg',
+  generation: 'g1',
+  location: 'Frankfurt/DE',
+  materialType: 'RM',
+  package: 'drum',
+  rmSequence: 1
+})
+MERGE (rm2:Product:RM {
+  productSKU: 'crx-rm-002',
+  globalBrand: 'Cardioxetin',
+  description: 'Microcrystalline Cellulose Excipient',
+  form: 'Powder',
+  strength: 'all',
+  generation: 'g1',
+  location: 'Boston MA/US',
+  materialType: 'RM',
+  package: 'sack',
+  rmSequence: 2
+})
+MERGE (rm3:Product:RM {
+  productSKU: 'crx-rm-003',
+  globalBrand: 'Cardioxetin',
+  description: 'Magnesium Stearate Lubricant',
+  form: 'Powder',
+  strength: 'all',
+  generation: 'g1',
+  location: 'Boston MA/US',
+  materialType: 'RM',
+  package: 'sack',
+  rmSequence: 3
+})
 
 // ============================================================
-// SECTION 4 — AGGREGATED TOTAL_* RELATIONSHIPS
-//
-// Pre-computed from raw movements. The aggregation query in
-// the documentation (MATCH BATCH_ISSUED ... MERGE TOTAL_ISSUED)
-// would derive the same values from Section 3 data.
-//
-// partInReceived on TOTAL_RECEIVED is set to 1.0 so that the
-// forward-trace reduce() in Query 1 evaluates cleanly without
-// null propagation (process order fully produces its output).
-//
-// Contamination path from B01 to any delivery multiplies:
-//   TOTAL_ISSUED B01→PO01:   1.0000  (sole API input)
-//   TOTAL_RECEIVED PO01→B02: 1.0000
-//   TOTAL_BATCH_TRANSFER B02→B03: 1.0000
-//   TOTAL_PLANT_TRANSFER B03→B04: 1.0000
-//   TOTAL_ISSUED B04→PO02:   0.8000  (480/600 kg blend)
-//   TOTAL_RECEIVED PO02→B06: 1.0000
-//   TOTAL_ISSUED B06→PO03/4: 0.9091  (300/330 kg tablets)
-//   TOTAL_RECEIVED PO0x→B0x: 1.0000
-//   TOTAL_ISSUED B08→PO05:   0.9910  (330/333 kg coated)
-//   TOTAL_RECEIVED PO05→B11: 1.0000
-//   TOTAL_PLANT_TRANSFER B11→B12: 1.0000
-//   TOTAL_ISSUED B12→PO07:   1.0000  (packaging = no API dilution)
-//   TOTAL_RECEIVED PO07→B16: 1.0000
-//   TOTAL_ISSUED B16→PO09:   1.0000
-//   TOTAL_RECEIVED PO09→B19: 1.0000
-//   TOTAL_ISSUE_DELIVERY B19→DEL: fraction of batch delivered
-//
-//   Cumulative API fraction at B19: 0.8×0.9091×0.9910 = 0.7207
-//   DEL-001 (5000/16650=0.3003): 0.7207×0.3003 = 21.65%
-//   DEL-002 (3000/16650=0.1802): 0.7207×0.1802 = 12.99%
-//   DEL-003 (5000/16650=0.3003): 0.7207×0.3003 = 21.65%
-//   DEL-004 (5000/16650=0.3003): 0.7207×0.3003 = 21.65%
-//   DEL-005 (4000/16650=0.2402): 0.7207×0.2402 = 17.32%
+// SUPPLIER → RAW MATERIAL
+// synthchem is the ONLY supplier of the base compound (rm1)
+// - a single-supplier risk. rm2 has two suppliers; rm3 has one.
 // ============================================================
 
-// ── TOTAL_ISSUED ─────────────────────────────────────────────
+MERGE (synthchem)-[:SUPPLIES_RM {supplierCapacity: 50000}]->(rm1)
+MERGE (bioraw)-[:SUPPLIES_RM {supplierCapacity: 100000}]->(rm2)
+MERGE (altchem)-[:SUPPLIES_RM {supplierCapacity: 80000}]->(rm2)
+MERGE (bioraw)-[:SUPPLIES_RM {supplierCapacity: 75000}]->(rm3)
 
-// B01 → PO01: sole input, 100% of granulate mass from API
-MATCH (b:Batch {batchNr:'1100_1101475_2899901'}),
-      (p:ProcessOrder {orderNr:'PO-2024-001'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 500.0, r.partInReceived = 1.0;
+// ============================================================
+// API (Active Pharmaceutical Ingredients)
+// ============================================================
 
-// B04 → PO02: 480 kg of 600 kg blend = 80%
-MATCH (b:Batch {batchNr:'2000_GRN_20240115'}),
-      (p:ProcessOrder {orderNr:'PO-2024-002'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 480.0,
-    r.partInReceived = round(480.0/600.0 * 10000) / 10000;  // 0.8
+MERGE (api1:Product:API {
+  productSKU: 'crx-api-001',
+  globalBrand: 'Cardioxetin',
+  description: 'Cardioxetin Active Pharmaceutical Ingredient 10mg',
+  form: 'Tablet',
+  strength: '10mg',
+  generation: 'g1',
+  location: 'Dublin/IE',
+  materialType: 'API',
+  package: 'blister pack'
+})
+MERGE (api2:Product:API {
+  productSKU: 'crx-api-002',
+  globalBrand: 'Cardioxetin',
+  description: 'Cardioxetin Active Pharmaceutical Ingredient 20mg',
+  form: 'Tablet',
+  strength: '20mg',
+  generation: 'g1',
+  location: 'Dublin/IE',
+  materialType: 'API',
+  package: 'blister pack'
+})
 
-// B05 → PO02: 120 kg of 600 kg blend = 20% (excipient, not suspect)
-MATCH (b:Batch {batchNr:'EXT-MCC-20240114'}),
-      (p:ProcessOrder {orderNr:'PO-2024-002'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 120.0,
-    r.partInReceived = round(120.0/600.0 * 10000) / 10000;  // 0.2
+// ============================================================
+// BULK GRANULATE
+// ============================================================
 
-// B06 → PO03: 300 kg of 330 kg tablet mass ≈ 90.91%
-MATCH (b:Batch {batchNr:'2000_BLN_20240119'}),
-      (p:ProcessOrder {orderNr:'PO-2024-003'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 300.0,
-    r.partInReceived = round(300.0/330.0 * 10000) / 10000;  // 0.9091
+MERGE (bulk1:Product:BULK {
+  productSKU: 'crx-bulk-001',
+  globalBrand: 'Cardioxetin',
+  description: 'Cardioxetin Bulk Granulate 10mg',
+  form: 'Tablet',
+  strength: '10mg',
+  generation: 'g1',
+  location: 'Dublin/IE',
+  materialType: 'BULK',
+  package: 'blister pack'
+})
+MERGE (bulk2:Product:BULK {
+  productSKU: 'crx-bulk-002',
+  globalBrand: 'Cardioxetin',
+  description: 'Cardioxetin Bulk Granulate 20mg',
+  form: 'Tablet',
+  strength: '20mg',
+  generation: 'g1',
+  location: 'Dublin/IE',
+  materialType: 'BULK',
+  package: 'blister pack'
+})
 
-// B07 → PO03: 30 kg HPC binder
-MATCH (b:Batch {batchNr:'EXT-HPC-20240118'}),
-      (p:ProcessOrder {orderNr:'PO-2024-003'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 30.0,
-    r.partInReceived = round(30.0/330.0 * 10000) / 10000;   // 0.0909
+// ============================================================
+// DRUG PRODUCT (film-coated tablets)
+// ============================================================
 
-// B06 → PO04: 300 kg of 330 kg tablet mass ≈ 90.91%
-MATCH (b:Batch {batchNr:'2000_BLN_20240119'}),
-      (p:ProcessOrder {orderNr:'PO-2024-004'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 300.0,
-    r.partInReceived = round(300.0/330.0 * 10000) / 10000;  // 0.9091
+MERGE (dp1:Product:DP {
+  productSKU: 'crx-dp-001',
+  globalBrand: 'Cardioxetin',
+  description: 'Cardioxetin Film-Coated Tablet 10mg',
+  form: 'Tablet',
+  strength: '10mg',
+  generation: 'g1',
+  location: 'Lyon/FR',
+  materialType: 'DP',
+  package: 'blister pack'
+})
+MERGE (dp2:Product:DP {
+  productSKU: 'crx-dp-002',
+  globalBrand: 'Cardioxetin',
+  description: 'Cardioxetin Film-Coated Tablet 20mg',
+  form: 'Tablet',
+  strength: '20mg',
+  generation: 'g1',
+  location: 'Lyon/FR',
+  materialType: 'DP',
+  package: 'blister pack'
+})
 
-// B07 → PO04: 30 kg HPC binder
-MATCH (b:Batch {batchNr:'EXT-HPC-20240118'}),
-      (p:ProcessOrder {orderNr:'PO-2024-004'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 30.0,
-    r.partInReceived = round(30.0/330.0 * 10000) / 10000;   // 0.0909
+// ============================================================
+// FINISHED GOODS
+// ============================================================
 
-// B08 → PO05: 330 kg of 333 kg coated tablets ≈ 99.10%
-MATCH (b:Batch {batchNr:'2000_TAB_A_20240123'}),
-      (p:ProcessOrder {orderNr:'PO-2024-005'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 330.0,
-    r.partInReceived = round(330.0/333.0 * 10000) / 10000;  // 0.991
+MERGE (fg1:Product:FG {
+  productSKU: 'crx-fg-001',
+  globalBrand: 'Cardioxetin',
+  description: 'Cardioxetin 10mg Packaged for Distribution',
+  form: 'Tablet',
+  strength: '10mg',
+  generation: 'g1',
+  location: 'Rotterdam/NL',
+  materialType: 'FG',
+  package: 'carton'
+})
+MERGE (fg2:Product:FG {
+  productSKU: 'crx-fg-002',
+  globalBrand: 'Cardioxetin',
+  description: 'Cardioxetin 20mg Packaged for Distribution',
+  form: 'Tablet',
+  strength: '20mg',
+  generation: 'g1',
+  location: 'Rotterdam/NL',
+  materialType: 'FG',
+  package: 'carton'
+})
 
-// B10 → PO05: 3 kg coating agent (not suspect)
-MATCH (b:Batch {batchNr:'EXT-CTG-20240124'}),
-      (p:ProcessOrder {orderNr:'PO-2024-005'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 3.0,
-    r.partInReceived = round(3.0/333.0 * 10000) / 10000;    // 0.009
+// ============================================================
+// DISTRIBUTION UNITS
+// ============================================================
 
-// B09 → PO06: 330 kg of 333 kg coated tablets ≈ 99.10%
-MATCH (b:Batch {batchNr:'2000_TAB_B_20240123'}),
-      (p:ProcessOrder {orderNr:'PO-2024-006'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 330.0,
-    r.partInReceived = round(330.0/333.0 * 10000) / 10000;  // 0.991
+MERGE (dist1:Product:DIST {
+  productSKU: 'crx-dist-001',
+  globalBrand: 'Cardioxetin',
+  description: 'Cardioxetin 10mg EU Distribution Unit',
+  form: 'Tablet',
+  strength: '10mg',
+  generation: 'g1',
+  location: 'Brussels/BE',
+  materialType: 'DIST',
+  package: 'carton'
+})
+MERGE (dist2:Product:DIST {
+  productSKU: 'crx-dist-002',
+  globalBrand: 'Cardioxetin',
+  description: 'Cardioxetin 20mg NA Distribution Unit',
+  form: 'Tablet',
+  strength: '20mg',
+  generation: 'g1',
+  location: 'Chicago IL/US',
+  materialType: 'DIST',
+  package: 'carton'
+})
 
-// B10 → PO06: 3 kg coating agent (not suspect)
-MATCH (b:Batch {batchNr:'EXT-CTG-20240124'}),
-      (p:ProcessOrder {orderNr:'PO-2024-006'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 3.0,
-    r.partInReceived = round(3.0/333.0 * 10000) / 10000;    // 0.009
+// ============================================================
+// DISTRIBUTORS
+// ============================================================
 
-// B12 → PO07: API fraction = 1.0 (packaging does not dilute drug content)
-MATCH (b:Batch {batchNr:'3000_FCT_A_20240129'}),
-      (p:ProcessOrder {orderNr:'PO-2024-007'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 333.0, r.partInReceived = 1.0;
+MERGE (euDist:Distributor {
+  location: 'EU Pharma Distribution NV',
+  market: 'EU',
+  iso3Code: 'BEL'
+})
+MERGE (naDist:Distributor {
+  location: 'North American Pharma Corp',
+  market: 'NA',
+  iso3Code: 'USA'
+})
 
-// B15 → PO07: foil packaging, contributes 0% to drug contamination
-MATCH (b:Batch {batchNr:'EXT-BLI-20240128'}),
-      (p:ProcessOrder {orderNr:'PO-2024-007'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 250.0, r.partInReceived = 0.0;
+// ============================================================
+// PRODUCT FLOW (logical supply chain path)
+// 10mg chain: rm1 → api1, rm2/rm3 → bulk1, api1 → bulk1 → dp1 → fg1 → dist1
+// 20mg chain: rm1 → api2, api2 → bulk2 → dp2 → fg2 → dist2
+// ============================================================
 
-// B14 → PO08
-MATCH (b:Batch {batchNr:'3000_FCT_B_20240129'}),
-      (p:ProcessOrder {orderNr:'PO-2024-008'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 333.0, r.partInReceived = 1.0;
+MERGE (rm1)-[:PRODUCT_FLOW {
+  globalBrand: 'Cardioxetin', form: 'Tablet', strength: '10mg',
+  generation: 'g1', market: 'EU', conversionRatio: 0.92,
+  inPercent: 95.0, outPercent: 92.0
+}]->(api1)
+MERGE (rm2)-[:PRODUCT_FLOW {
+  globalBrand: 'Cardioxetin', form: 'Tablet', strength: '10mg',
+  generation: 'g1', market: 'EU', conversionRatio: 0.85
+}]->(bulk1)
+MERGE (rm3)-[:PRODUCT_FLOW {
+  globalBrand: 'Cardioxetin', form: 'Tablet', strength: '10mg',
+  generation: 'g1', market: 'EU', conversionRatio: 0.99
+}]->(bulk1)
+MERGE (api1)-[:PRODUCT_FLOW {
+  globalBrand: 'Cardioxetin', form: 'Tablet', strength: '10mg',
+  generation: 'g1', market: 'EU', conversionRatio: 0.95
+}]->(bulk1)
+MERGE (bulk1)-[:PRODUCT_FLOW {
+  globalBrand: 'Cardioxetin', form: 'Tablet', strength: '10mg',
+  generation: 'g1', market: 'EU', conversionRatio: 0.98
+}]->(dp1)
+MERGE (dp1)-[:PRODUCT_FLOW {
+  globalBrand: 'Cardioxetin', form: 'Tablet', strength: '10mg',
+  generation: 'g1', market: 'EU', conversionRatio: 1.0
+}]->(fg1)
+MERGE (fg1)-[:PRODUCT_FLOW {
+  globalBrand: 'Cardioxetin', form: 'Tablet', strength: '10mg',
+  generation: 'g1', market: 'EU', conversionRatio: 1.0
+}]->(dist1)
 
-// B15 → PO08
-MATCH (b:Batch {batchNr:'EXT-BLI-20240128'}),
-      (p:ProcessOrder {orderNr:'PO-2024-008'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 250.0, r.partInReceived = 0.0;
+MERGE (rm1)-[:PRODUCT_FLOW {
+  globalBrand: 'Cardioxetin', form: 'Tablet', strength: '20mg',
+  generation: 'g1', market: 'NA', conversionRatio: 0.92
+}]->(api2)
+MERGE (api2)-[:PRODUCT_FLOW {
+  globalBrand: 'Cardioxetin', form: 'Tablet', strength: '20mg',
+  generation: 'g1', market: 'NA', conversionRatio: 0.95
+}]->(bulk2)
+MERGE (bulk2)-[:PRODUCT_FLOW {
+  globalBrand: 'Cardioxetin', form: 'Tablet', strength: '20mg',
+  generation: 'g1', market: 'NA', conversionRatio: 0.98
+}]->(dp2)
+MERGE (dp2)-[:PRODUCT_FLOW {
+  globalBrand: 'Cardioxetin', form: 'Tablet', strength: '20mg',
+  generation: 'g1', market: 'NA', conversionRatio: 1.0
+}]->(fg2)
+MERGE (fg2)-[:PRODUCT_FLOW {
+  globalBrand: 'Cardioxetin', form: 'Tablet', strength: '20mg',
+  generation: 'g1', market: 'NA', conversionRatio: 1.0
+}]->(dist2)
 
-// B16 → PO09: drug content passthrough = 1.0
-MATCH (b:Batch {batchNr:'3000_BLS_A_20240202'}),
-      (p:ProcessOrder {orderNr:'PO-2024-009'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 33300.0, r.partInReceived = 1.0;
+MERGE (dist1)-[:DISTRIBUTED_BY {demandQty: 25000}]->(euDist)
+MERGE (dist2)-[:DISTRIBUTED_BY {demandQty: 18000}]->(naDist)
 
-// B18 → PO09: carton packaging, 0% drug content
-MATCH (b:Batch {batchNr:'EXT-CTN-20240201'}),
-      (p:ProcessOrder {orderNr:'PO-2024-009'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 33300.0, r.partInReceived = 0.0;
+// ============================================================
+// EQUIPMENT
+// ============================================================
 
-// B17 → PO10
-MATCH (b:Batch {batchNr:'3000_BLS_B_20240202'}),
-      (p:ProcessOrder {orderNr:'PO-2024-010'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 33300.0, r.partInReceived = 1.0;
+MERGE (equip1:Equipment {
+  equipID: 1001,
+  nomenclature: 'High-Shear Granulator',
+  manufacturer: 'GEA Group',
+  model: 'PharmaConnect HSG-300',
+  serialNum: 'HSG-300-2019-001',
+  location: 'Dublin/IE',
+  stage: 1,
+  step: 1
+})
+MERGE (equip2:Equipment {
+  equipID: 1002,
+  nomenclature: 'Tablet Press',
+  manufacturer: 'Korsch AG',
+  model: 'XL400',
+  serialNum: 'KXL-400-2020-007',
+  location: 'Lyon/FR',
+  stage: 2,
+  step: 1
+})
+MERGE (equip3:Equipment {
+  equipID: 1003,
+  nomenclature: 'Blister Packaging Line',
+  manufacturer: 'Uhlmann Pac-Systeme',
+  model: 'UPS6',
+  serialNum: 'UPS6-2021-014',
+  location: 'Rotterdam/NL',
+  stage: 3,
+  step: 1
+})
 
-// B18 → PO10
-MATCH (b:Batch {batchNr:'EXT-CTN-20240201'}),
-      (p:ProcessOrder {orderNr:'PO-2024-010'})
-MERGE (b)-[r:TOTAL_ISSUED]->(p)
-SET r.totalIssued = 33300.0, r.partInReceived = 0.0;
+// ============================================================
+// EMPLOYEES
+// ============================================================
 
+MERGE (emp1:Employee {
+  employeeID: 101,
+  firstName: 'Maria',
+  lastName: 'Kovacs',
+  email: 'maria.kovacs@heartpharma.com',
+  gender: 'Female',
+  location: 'Dublin/IE'
+})
+MERGE (emp2:Employee {
+  employeeID: 102,
+  firstName: 'James',
+  lastName: 'Flanagan',
+  email: 'james.flanagan@heartpharma.com',
+  gender: 'Male',
+  location: 'Dublin/IE'
+})
+MERGE (emp3:Employee {
+  employeeID: 103,
+  firstName: 'Sophie',
+  lastName: 'Martin',
+  email: 'sophie.martin@heartpharma.com',
+  gender: 'Female',
+  location: 'Lyon/FR'
+})
 
-// ── TOTAL_RECEIVED ────────────────────────────────────────────
-// partInReceived = 1.0 on all: the process order fully produces
-// its output batch; no dilution occurs at this relationship.
+// Operator certifications
+MERGE (emp1)-[:IS_CERTIFIED_OPERATOR {yearsExperience: 5}]->(equip1)
+MERGE (emp1)-[:IS_CERTIFIED_OPERATOR {yearsExperience: 3}]->(equip2)
+MERGE (emp2)-[:IS_CERTIFIED_OPERATOR {yearsExperience: 2}]->(equip1)
+MERGE (emp3)-[:IS_CERTIFIED_OPERATOR {yearsExperience: 7}]->(equip2)
+MERGE (emp3)-[:IS_CERTIFIED_OPERATOR {yearsExperience: 4}]->(equip3)
 
-MATCH (p:ProcessOrder {orderNr:'PO-2024-001'}),
-      (b:Batch {batchNr:'1000_GRN_20240112'})
-MERGE (p)-[r:TOTAL_RECEIVED]->(b)
-SET r.totalReceived = 480.0, r.partInReceived = 1.0;
+// ============================================================
+// BATCHES
+// LOT-RM-2024-001 is placed on QUALITY HOLD - drives the recall scenario
+// ============================================================
 
-MATCH (p:ProcessOrder {orderNr:'PO-2024-002'}),
-      (b:Batch {batchNr:'2000_BLN_20240119'})
-MERGE (p)-[r:TOTAL_RECEIVED]->(b)
-SET r.totalReceived = 600.0, r.partInReceived = 1.0;
+MERGE (batchRM1:Batch {
+  lotNumber: 'LOT-RM-2024-001',
+  productSKU: 'crx-rm-001',
+  globalBrand: 'Cardioxetin',
+  materialType: 'RM',
+  form: 'Tablet',
+  strength: '10mg',
+  generation: 'g1',
+  package: 'drum',
+  location: 'Frankfurt/DE',
+  dateProduced: date('2024-01-15'),
+  equipID: 1001
+})
+MERGE (batchRM2:Batch {
+  lotNumber: 'LOT-RM-2024-002',
+  productSKU: 'crx-rm-002',
+  globalBrand: 'Cardioxetin',
+  materialType: 'RM',
+  form: 'Powder',
+  strength: 'all',
+  generation: 'g1',
+  package: 'sack',
+  location: 'Boston MA/US',
+  dateProduced: date('2024-01-12'),
+  equipID: 0
+})
+MERGE (batchAPI:Batch {
+  lotNumber: 'LOT-API-2024-001',
+  productSKU: 'crx-api-001',
+  globalBrand: 'Cardioxetin',
+  materialType: 'API',
+  form: 'Tablet',
+  strength: '10mg',
+  generation: 'g1',
+  package: 'blister pack',
+  location: 'Dublin/IE',
+  dateProduced: date('2024-02-05'),
+  equipID: 1001
+})
+MERGE (batchBULK:Batch {
+  lotNumber: 'LOT-BULK-2024-001',
+  productSKU: 'crx-bulk-001',
+  globalBrand: 'Cardioxetin',
+  materialType: 'BULK',
+  form: 'Tablet',
+  strength: '10mg',
+  generation: 'g1',
+  package: 'blister pack',
+  location: 'Dublin/IE',
+  dateProduced: date('2024-02-20'),
+  equipID: 1002
+})
+MERGE (batchFG1:Batch {
+  lotNumber: 'LOT-FG-2024-001',
+  productSKU: 'crx-fg-001',
+  globalBrand: 'Cardioxetin',
+  materialType: 'FG',
+  form: 'Tablet',
+  strength: '10mg',
+  generation: 'g1',
+  package: 'carton',
+  location: 'Rotterdam/NL',
+  dateProduced: date('2024-03-10'),
+  equipID: 1003
+})
+// A separate 20mg FG batch produced on the same Tablet Press (equip2) as LOT-BULK-2024-001
+// - used in the cross-contamination query
+MERGE (batchFG2:Batch {
+  lotNumber: 'LOT-FG-2024-002',
+  productSKU: 'crx-fg-002',
+  globalBrand: 'Cardioxetin',
+  materialType: 'FG',
+  form: 'Tablet',
+  strength: '20mg',
+  generation: 'g1',
+  package: 'carton',
+  location: 'Lyon/FR',
+  dateProduced: date('2024-02-21'),
+  equipID: 1002
+})
 
-MATCH (p:ProcessOrder {orderNr:'PO-2024-003'}),
-      (b:Batch {batchNr:'2000_TAB_A_20240123'})
-MERGE (p)-[r:TOTAL_RECEIVED]->(b)
-SET r.totalReceived = 330.0, r.partInReceived = 1.0;
+// Batch → product stage linkage
+MERGE (batchRM1)-[:IS_BATCH_FOR]->(rm1)
+MERGE (batchRM2)-[:IS_BATCH_FOR]->(rm2)
+MERGE (batchAPI)-[:IS_BATCH_FOR]->(api1)
+MERGE (batchBULK)-[:IS_BATCH_FOR]->(bulk1)
+MERGE (batchFG1)-[:IS_BATCH_FOR]->(fg1)
+MERGE (batchFG2)-[:IS_BATCH_FOR]->(fg2)
 
-MATCH (p:ProcessOrder {orderNr:'PO-2024-004'}),
-      (b:Batch {batchNr:'2000_TAB_B_20240123'})
-MERGE (p)-[r:TOTAL_RECEIVED]->(b)
-SET r.totalReceived = 330.0, r.partInReceived = 1.0;
+// Supplier → batch (physical delivery)
+MERGE (synthchem)-[:SUPPLIES_BATCH]->(batchRM1)
+MERGE (bioraw)-[:SUPPLIES_BATCH]->(batchRM2)
 
-MATCH (p:ProcessOrder {orderNr:'PO-2024-005'}),
-      (b:Batch {batchNr:'2000_FCT_A_20240127'})
-MERGE (p)-[r:TOTAL_RECEIVED]->(b)
-SET r.totalReceived = 333.0, r.partInReceived = 1.0;
+// Batch flow chain (physical lot progression)
+MERGE (batchRM1)-[:BATCH_FLOW {
+  globalBrand: 'Cardioxetin', form: 'Tablet', strength: '10mg',
+  generation: 'g1', market: 'EU', lotNumber: 'LOT-API-2024-001'
+}]->(batchAPI)
+MERGE (batchRM2)-[:BATCH_FLOW {
+  globalBrand: 'Cardioxetin', form: 'Tablet', strength: '10mg',
+  generation: 'g1', market: 'EU', lotNumber: 'LOT-BULK-2024-001'
+}]->(batchBULK)
+MERGE (batchAPI)-[:BATCH_FLOW {
+  globalBrand: 'Cardioxetin', form: 'Tablet', strength: '10mg',
+  generation: 'g1', market: 'EU', lotNumber: 'LOT-BULK-2024-001'
+}]->(batchBULK)
+MERGE (batchBULK)-[:BATCH_FLOW {
+  globalBrand: 'Cardioxetin', form: 'Tablet', strength: '10mg',
+  generation: 'g1', market: 'EU', lotNumber: 'LOT-FG-2024-001'
+}]->(batchFG1)
+MERGE (batchFG1)-[:BATCH_FLOW {
+  globalBrand: 'Cardioxetin', form: 'Tablet', strength: '10mg',
+  generation: 'g1', market: 'EU', lotNumber: 'LOT-FG-2024-001'
+}]->(euDist)
 
-MATCH (p:ProcessOrder {orderNr:'PO-2024-006'}),
-      (b:Batch {batchNr:'2000_FCT_B_20240127'})
-MERGE (p)-[r:TOTAL_RECEIVED]->(b)
-SET r.totalReceived = 333.0, r.partInReceived = 1.0;
+// ============================================================
+// PRODUCTION RUNS
+// pr2 and pr4 both use equip2 (Korsch Tablet Press) - cross-contamination risk
+// post1 has a shortened post-run cleaning window (45 min vs. 60 min minimum)
+// ============================================================
 
-MATCH (p:ProcessOrder {orderNr:'PO-2024-007'}),
-      (b:Batch {batchNr:'3000_BLS_A_20240202'})
-MERGE (p)-[r:TOTAL_RECEIVED]->(b)
-SET r.totalReceived = 33300.0, r.partInReceived = 1.0;
+MERGE (pr1:ProductionRun {
+  lotNumber: 'LOT-API-2024-001',
+  productSKU: 'crx-api-001',
+  equipID: 1001,
+  equipUsed: 'GEA Group: HSG-300-2019-001',
+  location: 'Dublin/IE',
+  startTime: localdatetime('2024-02-05T08:00:00'),
+  finishTime: localdatetime('2024-02-05T17:30:00'),
+  runDuration: duration('PT9H30M'),
+  runTimeHMS: localtime('09:30:00')
+})
+MERGE (pr2:ProductionRun {
+  lotNumber: 'LOT-BULK-2024-001',
+  productSKU: 'crx-bulk-001',
+  equipID: 1002,
+  equipUsed: 'Korsch AG: KXL-400-2020-007',
+  location: 'Lyon/FR',
+  startTime: localdatetime('2024-02-20T07:00:00'),
+  finishTime: localdatetime('2024-02-20T15:00:00'),
+  runDuration: duration('PT8H'),
+  runTimeHMS: localtime('08:00:00')
+})
+MERGE (pr3:ProductionRun {
+  lotNumber: 'LOT-FG-2024-001',
+  productSKU: 'crx-fg-001',
+  equipID: 1003,
+  equipUsed: 'Uhlmann: UPS6-2021-014',
+  location: 'Rotterdam/NL',
+  startTime: localdatetime('2024-03-10T06:00:00'),
+  finishTime: localdatetime('2024-03-10T14:00:00'),
+  runDuration: duration('PT8H'),
+  runTimeHMS: localtime('08:00:00')
+})
+// pr4 uses the same Tablet Press as pr2 - the cross-contamination link
+MERGE (pr4:ProductionRun {
+  lotNumber: 'LOT-FG-2024-002',
+  productSKU: 'crx-fg-002',
+  equipID: 1002,
+  equipUsed: 'Korsch AG: KXL-400-2020-007',
+  location: 'Lyon/FR',
+  startTime: localdatetime('2024-02-21T07:00:00'),
+  finishTime: localdatetime('2024-02-21T16:00:00'),
+  runDuration: duration('PT9H'),
+  runTimeHMS: localtime('09:00:00')
+})
 
-MATCH (p:ProcessOrder {orderNr:'PO-2024-008'}),
-      (b:Batch {batchNr:'3000_BLS_B_20240202'})
-MERGE (p)-[r:TOTAL_RECEIVED]->(b)
-SET r.totalReceived = 33300.0, r.partInReceived = 1.0;
+// Production run → batch
+MERGE (pr1)-[:PRODUCED_BATCH]->(batchAPI)
+MERGE (pr2)-[:PRODUCED_BATCH]->(batchBULK)
+MERGE (pr3)-[:PRODUCED_BATCH]->(batchFG1)
+MERGE (pr4)-[:PRODUCED_BATCH]->(batchFG2)
 
-MATCH (p:ProcessOrder {orderNr:'PO-2024-009'}),
-      (b:Batch {batchNr:'3000_BOX_A_20240207'})
-MERGE (p)-[r:TOTAL_RECEIVED]->(b)
-SET r.totalReceived = 16650.0, r.partInReceived = 1.0;
+// Production run → equipment
+MERGE (pr1)-[:USED_EQUIP]->(equip1)
+MERGE (pr2)-[:USED_EQUIP]->(equip2)
+MERGE (pr3)-[:USED_EQUIP]->(equip3)
+MERGE (pr4)-[:USED_EQUIP]->(equip2)  // Same Tablet Press as pr2
 
-MATCH (p:ProcessOrder {orderNr:'PO-2024-010'}),
-      (b:Batch {batchNr:'3000_BOX_B_20240207'})
-MERGE (p)-[r:TOTAL_RECEIVED]->(b)
-SET r.totalReceived = 16650.0, r.partInReceived = 1.0;
+// Equipment → first run
+MERGE (equip1)-[:FIRST_RUN_EQUIP]->(pr1)
+MERGE (equip2)-[:FIRST_RUN_EQUIP]->(pr2)
+MERGE (equip3)-[:FIRST_RUN_EQUIP]->(pr3)
 
+// Consecutive runs on equip2 (Tablet Press)
+MERGE (pr2)-[:NEXT_RUN_EQUIP {idleDuration: duration('PT15H')}]->(pr4)
 
-// ── TOTAL_BATCH_TRANSFER ──────────────────────────────────────
-// B02 → B03: QC reclassification, no mass change
-MATCH (b1:Batch {batchNr:'1000_GRN_20240112'}),
-      (b2:Batch {batchNr:'1000_GRN_20240113'})
-MERGE (b1)-[r:TOTAL_BATCH_TRANSFER]->(b2)
-SET r.totalTransferred = 480.0, r.partInReceived = 1.0;
+// Equipment → batches produced on it
+MERGE (equip1)-[:USED_FOR_BATCH]->(batchAPI)
+MERGE (equip2)-[:USED_FOR_BATCH]->(batchBULK)
+MERGE (equip2)-[:USED_FOR_BATCH]->(batchFG2)
+MERGE (equip3)-[:USED_FOR_BATCH]->(batchFG1)
 
+// Next batch on same equipment
+MERGE (batchBULK)-[:NEXT_EQUIP_BATCH]->(batchFG2)
 
-// ── TOTAL_PLANT_TRANSFER ──────────────────────────────────────
-// B03 → B04  (plant 1000 → 2000)
-MATCH (b1:Batch {batchNr:'1000_GRN_20240113'}),
-      (b2:Batch {batchNr:'2000_GRN_20240115'})
-MERGE (b1)-[r:TOTAL_PLANT_TRANSFER]->(b2)
-SET r.totalTransferred = 480.0, r.partInReceived = 1.0;
+// Operator → production run
+MERGE (emp1)-[:PERFORMED_RUN]->(pr1)
+MERGE (emp3)-[:PERFORMED_RUN]->(pr2)
+MERGE (emp3)-[:PERFORMED_RUN]->(pr3)
+MERGE (emp1)-[:PERFORMED_RUN]->(pr4)
 
-// B11 → B12  (plant 2000 → 3000, Line A)
-MATCH (b1:Batch {batchNr:'2000_FCT_A_20240127'}),
-      (b2:Batch {batchNr:'3000_FCT_A_20240129'})
-MERGE (b1)-[r:TOTAL_PLANT_TRANSFER]->(b2)
-SET r.totalTransferred = 333.0, r.partInReceived = 1.0;
+// ============================================================
+// PRE-RUN SETUPS
+// ============================================================
 
-// B13 → B14  (plant 2000 → 3000, Line B)
-MATCH (b1:Batch {batchNr:'2000_FCT_B_20240127'}),
-      (b2:Batch {batchNr:'3000_FCT_B_20240129'})
-MERGE (b1)-[r:TOTAL_PLANT_TRANSFER]->(b2)
-SET r.totalTransferred = 333.0, r.partInReceived = 1.0;
+MERGE (setup1:PreRunSetup {
+  lotNumber: 'LOT-API-2024-001',
+  productSKU: 'crx-api-001',
+  equipID: 1001,
+  location: 'Dublin/IE',
+  setupStartTime: localdatetime('2024-02-05T07:30:00'),
+  setupFinishTime: localdatetime('2024-02-05T08:00:00'),
+  setupDuration: duration('PT30M'),
+  setupTimeHMS: localtime('00:30:00')
+})
+MERGE (setup2:PreRunSetup {
+  lotNumber: 'LOT-BULK-2024-001',
+  productSKU: 'crx-bulk-001',
+  equipID: 1002,
+  location: 'Lyon/FR',
+  setupStartTime: localdatetime('2024-02-20T06:35:00'),
+  setupFinishTime: localdatetime('2024-02-20T07:00:00'),
+  setupDuration: duration('PT25M'),
+  setupTimeHMS: localtime('00:25:00')
+})
+// Setup for the second run on equip2 (pr4)
+MERGE (setup4:PreRunSetup {
+  lotNumber: 'LOT-FG-2024-002',
+  productSKU: 'crx-fg-002',
+  equipID: 1002,
+  location: 'Lyon/FR',
+  setupStartTime: localdatetime('2024-02-21T06:35:00'),
+  setupFinishTime: localdatetime('2024-02-21T07:00:00'),
+  setupDuration: duration('PT25M'),
+  setupTimeHMS: localtime('00:25:00')
+})
 
+MERGE (setup1)-[:PREP_FOR_RUN]->(pr1)
+MERGE (setup2)-[:PREP_FOR_RUN]->(pr2)
+MERGE (setup4)-[:PREP_FOR_RUN]->(pr4)
+MERGE (setup1)-[:EQUIP_SETUP]->(equip1)
+MERGE (setup2)-[:EQUIP_SETUP]->(equip2)
+MERGE (setup4)-[:EQUIP_SETUP]->(equip2)
+MERGE (emp1)-[:PERFORMED_SETUP]->(setup1)
+MERGE (emp3)-[:PERFORMED_SETUP]->(setup2)
+MERGE (emp1)-[:PERFORMED_SETUP]->(setup4)
 
-// ── TOTAL_ISSUE_DELIVERY (Batch → Delivery) ───────────────────
-// partInReceived = deliveredQty / batchQty
-// This represents the fraction of the finished batch shipped
-// to each customer and is the final multiplier in the
-// contamination percentage calculation.
+// ============================================================
+// POST-RUN STAGES
+// post1: 45 min cleaning - BELOW the 60-minute minimum standard
+// post2, post4: compliant
+// ============================================================
 
-// B19 (16,650 boxes) → DEL-001: 5,000 boxes = 30.03%
-MATCH (b:Batch {batchNr:'3000_BOX_A_20240207'}),
-      (d:Delivery {deliveryNr:'DEL-2024-001'})
-MERGE (b)-[r:TOTAL_ISSUE_DELIVERY]->(d)
-SET r.quantity = 5000.0,
-    r.partInReceived = round(5000.0/16650.0 * 10000) / 10000;  // 0.3003
+MERGE (post1:PostRunStage {
+  lotNumber: 'LOT-API-2024-001',
+  productSKU: 'crx-api-001',
+  equipID: 1001,
+  location: 'Dublin/IE',
+  postRunStartTime: localdatetime('2024-02-05T17:30:00'),
+  postRunFinishTime: localdatetime('2024-02-05T18:15:00'),
+  postRunDuration: duration('PT45M'),
+  postRunTimeHMS: localtime('00:45:00')
+})
+MERGE (post2:PostRunStage {
+  lotNumber: 'LOT-BULK-2024-001',
+  productSKU: 'crx-bulk-001',
+  equipID: 1002,
+  location: 'Lyon/FR',
+  postRunStartTime: localdatetime('2024-02-20T15:00:00'),
+  postRunFinishTime: localdatetime('2024-02-20T16:05:00'),
+  postRunDuration: duration('PT65M'),
+  postRunTimeHMS: localtime('01:05:00')
+})
+MERGE (post4:PostRunStage {
+  lotNumber: 'LOT-FG-2024-002',
+  productSKU: 'crx-fg-002',
+  equipID: 1002,
+  location: 'Lyon/FR',
+  postRunStartTime: localdatetime('2024-02-21T16:00:00'),
+  postRunFinishTime: localdatetime('2024-02-21T17:05:00'),
+  postRunDuration: duration('PT65M'),
+  postRunTimeHMS: localtime('01:05:00')
+})
 
-// B19 → DEL-002: 3,000 boxes = 18.02%
-MATCH (b:Batch {batchNr:'3000_BOX_A_20240207'}),
-      (d:Delivery {deliveryNr:'DEL-2024-002'})
-MERGE (b)-[r:TOTAL_ISSUE_DELIVERY]->(d)
-SET r.quantity = 3000.0,
-    r.partInReceived = round(3000.0/16650.0 * 10000) / 10000;  // 0.1802
-
-// B19 → DEL-005: 4,000 boxes = 24.02%
-MATCH (b:Batch {batchNr:'3000_BOX_A_20240207'}),
-      (d:Delivery {deliveryNr:'DEL-2024-005'})
-MERGE (b)-[r:TOTAL_ISSUE_DELIVERY]->(d)
-SET r.quantity = 4000.0,
-    r.partInReceived = round(4000.0/16650.0 * 10000) / 10000;  // 0.2402
-
-// B20 (16,650 boxes) → DEL-003: 5,000 boxes = 30.03%
-MATCH (b:Batch {batchNr:'3000_BOX_B_20240207'}),
-      (d:Delivery {deliveryNr:'DEL-2024-003'})
-MERGE (b)-[r:TOTAL_ISSUE_DELIVERY]->(d)
-SET r.quantity = 5000.0,
-    r.partInReceived = round(5000.0/16650.0 * 10000) / 10000;  // 0.3003
-
-// B20 → DEL-004: 5,000 boxes = 30.03%
-MATCH (b:Batch {batchNr:'3000_BOX_B_20240207'}),
-      (d:Delivery {deliveryNr:'DEL-2024-004'})
-MERGE (b)-[r:TOTAL_ISSUE_DELIVERY]->(d)
-SET r.quantity = 5000.0,
-    r.partInReceived = round(5000.0/16650.0 * 10000) / 10000;  // 0.3003
-
+MERGE (pr1)-[:POSTRUN]->(post1)
+MERGE (pr2)-[:POSTRUN]->(post2)
+MERGE (pr4)-[:POSTRUN]->(post4)
+MERGE (post1)-[:EQUIP_POSTRUN]->(equip1)
+MERGE (post2)-[:EQUIP_POSTRUN]->(equip2)
+MERGE (post4)-[:EQUIP_POSTRUN]->(equip2)
+MERGE (post2)-[:NEXT_EQUIP_USE]->(setup4)  // equip2: post-run for pr2 → setup for pr4
+MERGE (emp1)-[:PERFORMED_POSTRUN]->(post1)
+MERGE (emp3)-[:PERFORMED_POSTRUN]->(post2)
+MERGE (emp1)-[:PERFORMED_POSTRUN]->(post4)
 ----
 
 == Cypher Queries
 
-The following queries demonstrate a variety of use cases enabled by the graph model, from forward and backward tracing to regulatory reporting and prioritization based on contamination thresholds.
+The queries that follow address the key supply chain questions raised by the HeartPharma quality hold scenario.
 
-=== Forward Trace: Find All Deliveries Impacted by a Faulty Batch
+=== Full Batch Lineage from Supplier to Distributor
 
-This is the core _contamination recall_ query. Starting from a known suspect batch, it traverses the entire downstream graph through process orders, derived batches, plant transfers, and deliveries up to an arbitrary depth.
+Given a specific raw material lot number, trace the full physical chain of custody - from the supplier who delivered it, through every intermediate batch, to the distributor who received the finished product.
+
+This is the foundational track-and-trace query. In a traditional system it would require joining purchase order records, manufacturing execution system logs, and warehouse despatch records from three or more systems. In the graph it is a single variable-length path traversal.
 
 [source, cypher, role=noheader]
 ----
-// Forward trace: find all deliveries downstream of a suspect batch
-WITH '1100_1101475_2899901' AS batchNr
-MATCH path = (startBatch:Batch {batchNr: batchNr})
-  -[:TOTAL_ISSUED | TOTAL_RECEIVED | TOTAL_BATCH_TRANSFER |
-     TOTAL_PLANT_TRANSFER | TOTAL_MAPPED_DELIVERY |
-     TOTAL_ISSUE_DELIVERY*1..100]->
-  (delivery:Delivery)
-WITH delivery,
-     length(path) AS pathLength,
-     [rel IN relationships(path) | rel.partInReceived] AS percBatchUsed
+// Full chain of custody for a raw material lot number
+MATCH p = (sup:Suppliers)-[:SUPPLIES_BATCH]->(rmBatch:Batch {lotNumber: 'LOT-RM-2024-001'})
+          -[:BATCH_FLOW*]->(endpoint:Distributor)
 RETURN
-  delivery.deliveryNr           AS deliveryNr,
-  delivery.soldToCustomer       AS soldToCustomer,
-  delivery.shipToCustomer       AS shipToCustomer,
-  delivery.lastPostingDate      AS lastPostingDate,
-  pathLength,
-  reduce(perc = 1.0, p IN percBatchUsed | perc * p) AS percBatchUsedInDelivery
-
-ORDER BY pathLength ASC
+  sup.companyName       AS Supplier,
+  sup.iso3Code          AS SupplierCountry,
+  [n IN nodes(p) WHERE n:Batch
+    | n.lotNumber + ' [' + n.materialType + ']'] AS BatchLineage,
+  endpoint.location     AS DistributedTo,
+  endpoint.market       AS Market
 ----
 
-=== Backward Trace: Find All Raw Materials in a Delivery
+=== Recall Impact Analysis
 
-Starting from a specific delivery, this query traverses backward to identify every raw material or API batch and its contributing supplier batch that was used in the product.
+Given a raw material lot placed on quality hold, identify every downstream batch that used that material and every distribution point that received finished product derived from it. This is the "blast radius" of the hold decision - the complete set of nodes that may need to be quarantined, investigated, or recalled.
+
+The `BATCH_FLOW*1..` pattern traverses an arbitrary number of hops, so the query works regardless of how many manufacturing stages exist between the raw material and the distributor.
 
 [source, cypher, role=noheader]
 ----
-// Backward trace: identify all raw material inputs for a given delivery
-WITH 'DEL-2024-001' AS deliveryNr
-MATCH path = (delivery:Delivery {deliveryNr: $deliveryNr})
-  <-[:TOTAL_ISSUED | TOTAL_RECEIVED | TOTAL_BATCH_TRANSFER |
-      TOTAL_PLANT_TRANSFER | TOTAL_MAPPED_DELIVERY |
-      TOTAL_ISSUE_DELIVERY*1..100]-
-  (rawBatch:Batch)
+// Determine the full downstream impact of a recalled raw material batch
+MATCH (recalled:Batch {lotNumber: 'LOT-RM-2024-001'})
+MATCH path = (recalled)-[:BATCH_FLOW*1..]->(affected)
+WITH affected, length(path) AS depth
+RETURN
+  CASE
+    WHEN affected:Batch     THEN affected.lotNumber
+    WHEN affected:Distributor THEN affected.location
+  END                                         AS AffectedNode,
+  CASE
+    WHEN affected:Batch     THEN affected.materialType
+    WHEN affected:Distributor THEN 'Distributor'
+  END                                         AS Stage,
+  affected.location                           AS Location,
+  depth                                       AS HopsFromRecall
+ORDER BY depth, Stage
+----
 
-// Leaf nodes with no incoming TOTAL_RECEIVED are raw material batches
-WHERE NOT (rawBatch)<-[:TOTAL_RECEIVED]-()
+=== Equipment Traceability
 
+For a given finished goods batch, identify every piece of equipment involved in its entire upstream manufacturing history. This information is required to scope any equipment-related CAPA (Corrective and Preventive Action) following a batch failure or deviation.
+
+[source, cypher, role=noheader]
+----
+// Identify all equipment used across the full production ancestry of a finished goods lot
+MATCH (fg:Batch {lotNumber: 'LOT-FG-2024-001'})
+MATCH (fg)<-[:BATCH_FLOW*0..]-(b:Batch)
+      <-[:PRODUCED_BATCH]-(run:ProductionRun)
+      -[:USED_EQUIP]->(equip:Equipment)
 RETURN DISTINCT
-  rawBatch.batchNr          AS rawBatchNr,
-  rawBatch.materialNr       AS materialNr,
-  rawBatch.materialDesc     AS materialDescription,
-  rawBatch.plant            AS plant,
-  rawBatch.bestBeforeDate   AS bestBeforeDate,
-  length(path)              AS depth
-ORDER BY depth
+  equip.nomenclature    AS EquipmentType,
+  equip.manufacturer    AS Manufacturer,
+  equip.model           AS Model,
+  equip.serialNum       AS SerialNumber,
+  equip.location        AS EquipmentSite,
+  b.materialType        AS ProductionStage,
+  b.lotNumber           AS BatchProducedHere
+ORDER BY ProductionStage
 ----
 
-=== Aggregating TOTAL_ISSUED Relationships
+=== Operator Involvement and Certification Audit
 
-This query aggregates the granular raw BATCH_ISSUED movements between a batch and a process order into a single TOTAL_ISSUED relationship with quantity and proportion metadata. It runs as part of the 5-minute delta loading cycle.
+Identify every operator who performed a production run in the ancestry of a finished goods batch, and verify whether they held the required certification for the equipment they operated. This supports 21 CFR Part 11 / Annex 11 audit requirements and can surface compliance gaps where an operator ran equipment they were not yet certified on.
 
 [source, cypher, role=noheader]
 ----
-// Aggregate raw BATCH_ISSUED movements into TOTAL_ISSUED
-MATCH (b:Batch)-[r:BATCH_ISSUED]->(po:ProcessOrder)
-
-WITH b, po,
-     sum(r.quantity) AS issuedQty
-
-// Retrieve total received quantity for this process order output
-MATCH (po)-[recv:BATCH_RECEIVED]->(outputBatch:Batch)
-WITH b, po, outputBatch, issuedQty,
-     sum(recv.quantity) AS totalReceived
-
-MERGE (b)-[ti:TOTAL_ISSUED]->(po)
-SET ti.totalIssued    = issuedQty,
-    ti.partInReceived = CASE
-                          WHEN totalReceived > 0
-                          THEN issuedQty / totalReceived
-                          ELSE 0
-                        END
-
-MERGE (po)-[tr:TOTAL_RECEIVED]->(outputBatch)
-SET tr.totalReceived = totalReceived
-
-// Query: Retrieve all TOTAL_ISSUED relationships with their quantities, showing which batch was issued to which process order, and the total quantity issued.
-
-// List TOTAL_ISSUED relationships by source batch and target process order
-MATCH (b:Batch)-[ti:TOTAL_ISSUED]->(po:ProcessOrder)
-RETURN
-  b.batchNr            AS batchNumber,
-  po.orderNo           AS processOrderNumber,
-  ti.totalIssued       AS totalIssuedQuantity,
-  ti.partInReceived    AS partInReceived
-ORDER BY b.batchNr, po.orderNo
+// Audit operator certifications across all production runs in a finished goods lot's ancestry
+WITH 'LOT-FG-2024-001' AS targetLot
+MATCH (fg:Batch {lotNumber: targetLot})
+MATCH (fg)<-[:BATCH_FLOW*0..]-(b:Batch)
+      <-[:PRODUCED_BATCH]-(run:ProductionRun)
+MATCH (emp:Employee)-[:PERFORMED_RUN]->(run)
+MATCH (run)-[:USED_EQUIP]->(equip:Equipment)
+OPTIONAL MATCH (emp)-[cert:IS_CERTIFIED_OPERATOR]->(equip)
+RETURN DISTINCT
+  emp.firstName + ' ' + emp.lastName          AS Operator,
+  emp.email                                   AS Email,
+  b.materialType                              AS ProductionStage,
+  equip.nomenclature                          AS Equipment,
+  CASE
+    WHEN cert IS NOT NULL THEN 'Certified'
+    ELSE 'NOT CERTIFIED - Review Required'
+  END                                         AS CertificationStatus,
+  COALESCE(cert.yearsExperience, 0)           AS YearsExperience
+ORDER BY ProductionStage, Operator
 ----
 
-=== Regulatory Summary Report for a Batch Recall
+=== Single-Supplier Raw Material Risk
 
-Returns the key KPIs required for a regulatory submission under EU FMD or DSCSA: total deliveries affected, unique customers, impacted delivery batches, and maximum traversal depth across the production graph.
+Identify raw materials that are sourced from only one supplier. These represent single points of failure: if that supplier experiences a quality issue, a geopolitical disruption, or a capacity constraint, there is no alternative source to fall back on. The Cardioxetin Base Compound is an example - it is exclusively supplied by SynthChem GmbH.
 
 [source, cypher, role=noheader]
 ----
-// Regulatory summary report for a faulty batch
-WITH '1100_1101475_2899901' AS batchNr
-MATCH path = (startBatch:Batch {batchNr: batchNr})
-  -[:TOTAL_ISSUED | TOTAL_RECEIVED | TOTAL_BATCH_TRANSFER |
-     TOTAL_PLANT_TRANSFER |
-     TOTAL_ISSUE_DELIVERY*1..100]->
-  (endNode)
-
-WITH endNode, length(path) AS depth,
-     labels(endNode) AS nodeLabels
-
+// Find raw materials with only one supplier - potential procurement bottlenecks
+MATCH (rm:RM)<-[:SUPPLIES_RM]-(sup:Suppliers)
+WITH rm,
+     COUNT(DISTINCT sup)              AS supplierCount,
+     COLLECT(DISTINCT sup.companyName) AS supplierNames
 RETURN
-  count(CASE WHEN 'Delivery' IN nodeLabels THEN 1 END) AS totalDeliveries,
-  count(DISTINCT CASE
-    WHEN 'Delivery' IN nodeLabels
-    THEN endNode.soldToCustomer END)                        AS uniqueCustomers,
-  count(DISTINCT CASE
-    WHEN 'Batch' IN nodeLabels
-    THEN endNode.batchNr END)                               AS deliveryBatches,
-  max(depth)                                               AS maxLevel
+  rm.globalBrand                      AS RawMaterial,
+  rm.description                      AS Description,
+  rm.location                         AS ProductionSite,
+  supplierCount                       AS NumberOfSuppliers,
+  supplierNames                       AS Suppliers,
+  CASE
+    WHEN supplierCount = 1
+      THEN 'HIGH RISK - Single Supplier'
+    ELSE 'Acceptable - Multiple Suppliers'
+  END                                 AS RiskLevel
+ORDER BY supplierCount ASC, rm.globalBrand
 ----
 
-=== Prioritized Customer Notification List with Contamination Threshold
+=== Cross-Batch Contamination Risk via Shared Equipment
 
-Returns only customers where the suspect batch constitutes more than a specified percentage of the delivered product. This is useful for risk-tiering recall notifications, for example distinguishing between customers where contamination exceeds 1% versus those with only trace-level exposure.
+Given a suspect batch, find all other batches that were produced on the same equipment. If the equipment was not cleaned to the required standard between runs (indicated by a shortened `postRunDuration`), those other batches may carry a contamination risk and should be included in the investigation scope.
+
+This query also surfaces whether those other batches have already been distributed, giving the quality team an immediate indication of whether a market withdrawal may be required.
 
 [source, cypher, role=noheader]
 ----
-// Customers affected above a contamination threshold
-WITH '1100_1101475_2899901' AS batchNr,
-0.0 as thresholdPercent
-MATCH path = (startBatch:Batch {batchNr: batchNr})
-  -[:TOTAL_ISSUED | TOTAL_RECEIVED | TOTAL_BATCH_TRANSFER |
-     TOTAL_PLANT_TRANSFER | TOTAL_ISSUE_DELIVERY*1..100]->
-  (delivery:Delivery)
-
-WITH delivery,thresholdPercent,
-     length(path) AS pathLen,
-     [rel IN relationships(path) WHERE rel.partInReceived IS NOT NULL
-      | rel.partInReceived] AS parts
-
-WITH delivery, pathLen,
-     reduce(p = 1.0, x IN parts | p * x) AS percBatchInDelivery
-
-WHERE percBatchInDelivery >= thresholdPercent
-
+// Identify other batches produced on the same equipment as a suspect lot - cross-contamination risk
+WITH 'LOT-BULK-2024-001' AS suspectLot
+MATCH (suspect:Batch {lotNumber: suspectLot})
+      <-[:PRODUCED_BATCH]-(suspectRun:ProductionRun)
+      -[:USED_EQUIP]->(equip:Equipment)
+MATCH (equip)<-[:USED_EQUIP]-(otherRun:ProductionRun)
+      -[:PRODUCED_BATCH]->(otherBatch:Batch)
+WHERE otherBatch.lotNumber <> suspectLot
+// Check the cleaning window between the two runs
+OPTIONAL MATCH (suspectRun)-[:POSTRUN]->(postRun:PostRunStage)
+OPTIONAL MATCH (otherBatch)-[:BATCH_FLOW*]->(dist:Distributor)
 RETURN
-  delivery.deliveryNr         AS deliveryNr,
-  delivery.soldToCustomer     AS customer,
-  delivery.shipToCustomer     AS shipTo,
-  delivery.lastPostingDate    AS postingDate,
-  round(percBatchInDelivery * 100, 4) AS contaminationPercent,
-  pathLen                     AS pathLength
-
-ORDER BY contaminationPercent DESC
+  equip.nomenclature                              AS SharedEquipment,
+  equip.serialNum                                 AS SerialNumber,
+  equip.location                                  AS EquipmentSite,
+  otherBatch.lotNumber                            AS PotentiallyExposedBatch,
+  otherBatch.materialType                         AS Stage,
+  otherBatch.dateProduced                         AS DateProduced,
+  COALESCE(postRun.postRunDuration, 'Unknown')    AS CleaningDurationAfterSuspectRun,
+  COALESCE(dist.location, 'Not yet distributed')  AS DistributedTo
+ORDER BY otherBatch.dateProduced
 ----
 
-== GDS (Graph Data Science)
+[TIP]
+====
+Extend this query to flag runs where the `postRunDuration` falls below a configurable minimum - for example 60 minutes - to automatically surface potential cleaning violations:
 
-Relevant GDS use cases for track-and-trace:
+[source, cypher, role=noheader]
+----
+WITH 'LOT-BULK-2024-001' AS suspectLot,
+     duration('PT60M')   AS minimumCleanDuration
+MATCH (suspect:Batch {lotNumber: suspectLot})
+      <-[:PRODUCED_BATCH]-(suspectRun:ProductionRun)
+      -[:USED_EQUIP]->(equip:Equipment)
+MATCH (suspectRun)-[:POSTRUN]->(postRun:PostRunStage)
+RETURN
+  equip.nomenclature                              AS Equipment,
+  equip.serialNum                                 AS SerialNumber,
+  postRun.postRunDuration                         AS ActualCleaningTime,
+  minimumCleanDuration                            AS RequiredMinimum,
+  CASE
+    WHEN postRun.postRunDuration < minimumCleanDuration
+      THEN 'VIOLATION - Insufficient Cleaning'
+    ELSE 'Compliant'
+  END                                             AS CleaningStatus
+----
+====
 
-* **Path finding**: Shortest or weighted paths between a source and set of nodes (e.g., from manufacturer to a specific dispenser) for route and delay analysis.
-* **Community detection**: Cluster locations or parties by shipment and movement patterns to identify distribution regions or suspicious clusters.
-* **Centrality**: Identify highly connected hubs (locations or parties) that are critical for distribution or potential single points of failure.
-* **Anomaly detection**: Compare movement patterns of a batch or unit to typical behavior to flag potential diversion or unusual routing.
+== Related Use Cases
 
-These algorithms can enhance risk assessment, recall planning, and compliance monitoring on top of the track-and-trace graph.
+The track-and-trace graph model is a foundation for several adjacent life-sciences use cases, each of which can be built on top of this dataset with minimal extensions.
+
+* xref:dispensing-anomaly/dispensing-anomaly.adoc[Dispensing Anomaly and Fraud Detection] - add `Pharmacy`, `Prescription`, and `Prescriber` nodes to detect pharmacies dispensing at abnormal volumes, identify supply chain bypass routes, and cross-reference recalled batches with the pharmacies that received them.
+
+* xref:counterfeit-diversion/counterfeit-diversion.adoc[Counterfeit and Diversion Detection] - add `SerialNumber` and `ScanEvent` nodes to implement unit-level chain-of-custody verification as required by DSCSA and FMD. Detect cloned serials, diverted units that skip mandatory scan points, and cold-chain timing violations.
+
+* xref:adverse-event/adverse-event.adoc[Adverse Event Investigation] - add `AdverseEvent` and `CaseReport` nodes. A single graph traversal identifies the common upstream factor - shared equipment, operator, or raw-material supplier - linking multiple patient reports, and defines the recall blast radius.
+
+* xref:equipment-utilisation/equipment-utilisation.adoc[Equipment Utilisation and Maintenance Planning] - no schema extension required. Compute run-to-idle ratios, flag below-standard cleaning windows, and match certified operators to under-utilised assets.
+
+* xref:supplier-risk/supplier-risk.adoc[Supplier Risk and Resilience Scoring] - add `Country` nodes with geopolitical risk scores. Simulate supplier removal and identify which finished products would lose all upstream supply.

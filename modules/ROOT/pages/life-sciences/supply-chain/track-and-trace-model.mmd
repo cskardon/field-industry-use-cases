@@ -1,0 +1,41 @@
+flowchart LR
+  classDef supply     fill:#4F46E5,color:#fff,stroke:#3730a3
+  classDef production fill:#059669,color:#fff,stroke:#047857
+
+  subgraph PF["Product Flow Layer"]
+    direction LR
+    Suppliers["Suppliers"]:::supply
+    RM["RM"]:::supply
+    API["API"]:::supply
+    BULK["BULK"]:::supply
+    DP["DP"]:::supply
+    FG["FG"]:::supply
+    DIST["DIST"]:::supply
+    Distributor["Distributor"]:::supply
+  end
+
+  subgraph BP["Batch & Production Layer"]
+    direction LR
+    Batch["Batch"]:::production
+    ProductionRun["ProductionRun"]:::production
+    Equipment["Equipment"]:::production
+    Employee["Employee"]:::production
+    PreRunSetup["PreRunSetup"]:::production
+    PostRunStage["PostRunStage"]:::production
+  end
+
+  Suppliers -->|SUPPLIES_RM| RM
+  RM -->|PRODUCT_FLOW| API
+  API -->|PRODUCT_FLOW| BULK
+  BULK -->|PRODUCT_FLOW| DP
+  DP -->|PRODUCT_FLOW| FG
+  FG -->|PRODUCT_FLOW| DIST
+  DIST -->|DISTRIBUTED_BY| Distributor
+  Suppliers -.->|SUPPLIES_BATCH| Batch
+  Batch -->|IS_BATCH_FOR| API
+  ProductionRun -->|PRODUCED_BATCH| Batch
+  ProductionRun -->|USED_EQUIP| Equipment
+  Employee -->|PERFORMED_RUN| ProductionRun
+  PreRunSetup -->|PREP_FOR_RUN| ProductionRun
+  ProductionRun -->|POSTRUN| PostRunStage
+  Employee -.->|IS_CERTIFIED_OPERATOR| Equipment
