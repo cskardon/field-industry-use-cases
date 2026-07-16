@@ -895,7 +895,7 @@ RETURN
 ORDER BY otherBatch.dateProduced
 ----
 
-[TIP]
+[IMPORTANT]
 ====
 Extend this query to flag runs where the `postRunDuration` falls below a configurable minimum - for example 60 minutes - to automatically surface potential cleaning violations:
 
